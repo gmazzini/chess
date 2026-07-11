@@ -56,11 +56,13 @@ typedef struct {
   double coherence;
   double resilience;
   double activity;
+  double future;
 } Phi;
 
 static double signed_forcing(double value,double forcing);
 static double state_activity(const Pos *p,int perspective);
 static double state_transfer(const Pos *p,int perspective);
+static double state_future_options(const Pos *p,int perspective);
 
 static int file_of(int sq){ return sq & 7; }
 static int rank_of(int sq){ return sq >> 3; }
@@ -1042,6 +1044,233 @@ static double state_transfer(const Pos *p,int perspective){
   return opp-mine;
 }
 
+
+/*
+  Future option value.
+
+  Non guarda la storia.
+  Legge solo le trasformazioni future ancora disponibili nello stato FEN.
+
+  Importante: un diritto FEN viene valorizzato solo se e' anche
+  materialmente/legalmente possibile nello stato corrente. Quindi evita
+  l'impossibile: per esempio K nella FEN senza re in e1 o torre in h1
+  non produce valore.
+*/
+
+static int castle_option_possible_now(const Pos *p,int side,int kingside){
+  int e,g,c,f,d,b,a,h;
+  int enemy;
+  char king,rook;
+
+  enemy=1-side;
+
+  if(side==0){
+    king='K';
+    rook='R';
+    e=sq_of(4,0);
+    g=sq_of(6,0);
+    c=sq_of(2,0);
+    f=sq_of(5,0);
+    d=sq_of(3,0);
+    b=sq_of(1,0);
+    a=sq_of(0,0);
+    h=sq_of(7,0);
+  } else {
+    king='k';
+    rook='r';
+    e=sq_of(4,7);
+    g=sq_of(6,7);
+    c=sq_of(2,7);
+    f=sq_of(5,7);
+    d=sq_of(3,7);
+    b=sq_of(1,7);
+    a=sq_of(0,7);
+    h=sq_of(7,7);
+  }
+
+  if(p->b[e]!=king) return 0;
+  if(attacked_by(p,e,enemy)) return 0;
+
+  if(kingside){
+    if(p->b[h]!=rook) return 0;
+    if(p->b[f]!='.' || p->b[g]!='.') return 0;
+    if(attacked_by(p,f,enemy)) return 0;
+    if(attacked_by(p,g,enemy)) return 0;
+    return 1;
+  } else {
+    if(p->b[a]!=rook) return 0;
+    if(p->b[d]!='.' || p->b[c]!='.' || p->b[b]!='.') return 0;
+    if(attacked_by(p,d,enemy)) return 0;
+    if(attacked_by(p,c,enemy)) return 0;
+    return 1;
+  }
+}
+
+static int side_has_castled_shape_future(const Pos *p,int side){
+  if(side==0){
+    if(p->b[sq_of(6,0)]=='K') return 1;
+    if(p->b[sq_of(2,0)]=='K') return 1;
+  } else {
+    if(p->b[sq_of(6,7)]=='k') return 1;
+    if(p->b[sq_of(2,7)]=='k') return 1;
+  }
+  return 0;
+}
+
+static double castling_future_side(const Pos *p,int side){
+  int wk,wq,bk,bq;
+  int ksq;
+  double v;
+
+  wk=(p->castle & 1)?1:0;
+  wq=(p->castle & 2)?1:0;
+  bk=(p->castle & 4)?1:0;
+  bq=(p->castle & 8)?1:0;
+
+  v=0.0;
+
+  if(side==0){
+    if(wk && castle_option_possible_now(p,side,1)) v+=0.45;
+    if(wq && castle_option_possible_now(p,side,0)) v+=0.35;
+  } else {
+    if(bk && castle_option_possible_now(p,side,1)) v+=0.45;
+    if(bq && castle_option_possible_now(p,side,0)) v+=0.35;
+  }
+
+  /*
+    Se la forma arroccata e' gia' nello stato, consideriamo la
+    trasformazione incassata senza bisogno di memoria storica.
+  */
+  if(side_has_castled_shape_future(p,side)) v+=0.25;
+
+  /*
+    Perdita dell'opzione: se siamo ancora col re in casa, non arroccati,
+    e non c'e' piu' nessun diritto possibile, la regione ha meno futuro.
+    Peso piccolo e limitato alla fase iniziale.
+  */
+  ksq=find_king(p,side);
+
+  if(side==0){
+    if(!wk && !wq && ksq==sq_of(4,0) && p->fullmove<=14) v-=0.30;
+    if(!side_has_castled_shape_future(p,side) &&
+       ksq>=0 && ksq!=sq_of(4,0) && p->fullmove<=12) v-=0.25;
+  } else {
+    if(!bk && !bq && ksq==sq_of(4,7) && p->fullmove<=14) v-=0.30;
+    if(!side_has_castled_shape_future(p,side) &&
+       ksq>=0 && ksq!=sq_of(4,7) && p->fullmove<=12) v-=0.25;
+  }
+
+  return v;
+}
+
+static double ep_future_side(const Pos *p,int side){
+  int f,r,from1,from2;
+  char pawn;
+
+  if(p->ep<0) return 0.0;
+  if(p->side!=side) return 0.0;
+
+  f=file_of(p->ep);
+  r=rank_of(p->ep);
+  pawn=(side==0)?'P':'p';
+
+  if(side==0){
+    from1=(f>0)?sq_of(f-1,r-1):-1;
+    from2=(f<7)?sq_of(f+1,r-1):-1;
+  } else {
+    from1=(f>0)?sq_of(f-1,r+1):-1;
+    from2=(f<7)?sq_of(f+1,r+1):-1;
+  }
+
+  if(from1>=0 && from1<64 && p->b[from1]==pawn) return 0.12;
+  if(from2>=0 && from2<64 && p->b[from2]==pawn) return 0.12;
+
+  return 0.0;
+}
+
+static double pawn_double_step_options_side(const Pos *p,int side){
+  int f,rank,one,two;
+  char pawn;
+  double v;
+
+  rank=(side==0)?1:6;
+  pawn=(side==0)?'P':'p';
+  v=0.0;
+
+  for(f=0;f<8;f++){
+    if(p->b[sq_of(f,rank)]!=pawn) continue;
+
+    if(side==0){
+      one=sq_of(f,2);
+      two=sq_of(f,3);
+    } else {
+      one=sq_of(f,5);
+      two=sq_of(f,4);
+    }
+
+    if(p->b[one]=='.' && p->b[two]=='.'){
+      if(f>=2 && f<=5) v+=0.04;
+      else v+=0.02;
+    }
+  }
+
+  return v;
+}
+
+static double promotion_future_side(const Pos *p,int side){
+  int i,r;
+  char pc;
+  double v;
+
+  v=0.0;
+
+  for(i=0;i<64;i++){
+    pc=p->b[i];
+    if(pc=='.') continue;
+    if(piece_side(pc)!=side) continue;
+    if(lower_piece(pc)!='p') continue;
+
+    r=rank_of(i);
+
+    if(side==0){
+      if(r==5) v+=0.14;
+      else if(r==6) v+=0.38;
+    } else {
+      if(r==2) v+=0.14;
+      else if(r==1) v+=0.38;
+    }
+  }
+
+  return v;
+}
+
+static double state_future_options(const Pos *p,int perspective){
+  int enemy;
+  double mine,opp,v;
+
+  enemy=1-perspective;
+
+  mine=0.0;
+  opp=0.0;
+
+  mine+=castling_future_side(p,perspective);
+  mine+=ep_future_side(p,perspective);
+  mine+=pawn_double_step_options_side(p,perspective);
+  mine+=promotion_future_side(p,perspective);
+
+  opp+=castling_future_side(p,enemy);
+  opp+=ep_future_side(p,enemy);
+  opp+=pawn_double_step_options_side(p,enemy);
+  opp+=promotion_future_side(p,enemy);
+
+  v=mine-0.65*opp;
+
+  if(v>2.0) v=2.0;
+  if(v<-2.0) v=-2.0;
+
+  return v;
+}
+
 static Phi eval_phi_state(const Pos *p,int perspective){
   Phi z;
   z.value=(double)static_eval(p,perspective)/100.0;
@@ -1054,6 +1283,7 @@ static Phi eval_phi_state(const Pos *p,int perspective){
   z.coherence=state_coherence(p,perspective);
   z.resilience=state_resilience(p,perspective);
   z.activity=state_activity(p,perspective);
+  z.future=state_future_options(p,perspective);
   return z;
 }
 
