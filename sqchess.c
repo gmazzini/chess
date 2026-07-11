@@ -1357,21 +1357,66 @@ static int choose_move(const Pos *p,Move *best,Metrics *bestm){
 }
 
 
+
+/*
+  Standard FEN interface helper.
+
+  External interface:
+      ./sqchess "<full FEN>"
+  or:
+      ./sqchess <board> <side> <castling> <ep> <halfmove> <fullmove>
+
+  This keeps all non-repeatable future options inside the current state:
+      castling rights
+      en-passant square
+      halfmove clock
+      fullmove number
+
+  No history is needed. We only read the residual options encoded in FEN.
+*/
+static const char *fen_from_argv(int argc,char **argv,char *buf,size_t bufsz){
+  int i;
+  size_t used,need;
+
+  if(argc<=1) return NULL;
+
+  buf[0]='\0';
+  used=0;
+
+  for(i=1;i<argc;i++){
+    need=strlen(argv[i]) + ((i>1)?1:0);
+    if(used+need+1>=bufsz) return NULL;
+
+    if(i>1){
+      buf[used++]=' ';
+      buf[used]='\0';
+    }
+
+    strcpy(buf+used,argv[i]);
+    used+=strlen(argv[i]);
+  }
+
+  return buf;
+}
+
+
 int main(int argc,char **argv){
+  const char *fen;
+  char fenbuf[512];
   Pos p;
   Pos after;
   Move best;
   Metrics bm;
   char uci[8];
-  const char *fen;
 
-  if(argc<2){
-    fprintf(stderr,"usage: %s \"fen\"\n",argv[0]);
+  fen=fen_from_argv(argc,argv,fenbuf,sizeof(fenbuf));
+
+  if(fen==NULL){
+    fprintf(stderr,"usage: %s \"<full FEN>\"\n",argv[0]);
     fprintf(stderr,"example: %s \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\"\n",argv[0]);
     return 1;
   }
 
-  fen=argv[1];
   if(!parse_fen(fen,&p)){
     fprintf(stderr,"invalid fen\n");
     return 1;
