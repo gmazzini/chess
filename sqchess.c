@@ -1724,9 +1724,9 @@ static void *root_worker_main(void *arg){
         if(w->perspective==0 && to_rank_sortie>=4) advanced_sortie=1;
         if(w->perspective==1 && to_rank_sortie<=3) advanced_sortie=1;
 
-        if(w->p->fullmove<=12 && minor_sortie && quiet_sortie && !gives_check_sortie){
+        if(w->p->fullmove<=30 && minor_sortie && quiet_sortie && !gives_check_sortie){
           if(advanced_sortie && m.hanging>0.75 && m.forcing<0.50){
-            sortie_guard=1.55*(m.hanging-0.75);
+            if(w->p->fullmove<=12) sortie_guard=1.55*(m.hanging-0.75); else sortie_guard=0.0;
 
             /*
               Extra decision-level cost if the sortie is not first development.
@@ -1749,7 +1749,18 @@ static void *root_worker_main(void *arg){
               }
 
               if(!home_from_sortie){
-                sortie_guard+=0.85;
+                if(w->p->fullmove<=12) sortie_guard+=0.85;
+
+                /*
+                  Midgame repeated minor sortie guard:
+                  if an already-developed minor piece makes a quiet advanced
+                  sortie in a tactically hot state, treat it as a likely false
+                  transformation. This targets moves such as Bd2-g5 when the
+                  center is already unstable and tactical pressure is high.
+                */
+                if(w->p->fullmove>12 && w->p->fullmove<=30 && m.tactic>2.20 && m.hanging>1.00){
+                  sortie_guard+=0.55*(m.tactic-2.20) + 0.25*(m.hanging-1.00);
+                }
               }
             }
 
