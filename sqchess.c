@@ -1271,6 +1271,141 @@ static double state_future_options(const Pos *p,int perspective){
   return v;
 }
 
+
+/*
+  Stabilization relief.
+
+  Misura diagnostica, non usata dalla funzione di scelta.
+  Indica se lo stato ha una struttura che riduce il burden futuro
+  rispetto a un centro fluido e non ancora sostenuto.
+*/
+
+static int sr_pawn_at(const Pos *p,int f,int r,int side){
+  char pc;
+  if(f<0 || f>7 || r<0 || r>7) return 0;
+  pc=p->b[sq_of(f,r)];
+  if(pc=='.') return 0;
+  if(piece_side(pc)!=side) return 0;
+  if(lower_piece(pc)!='p') return 0;
+  return 1;
+}
+
+static int sr_king_home(const Pos *p,int side){
+  if(side==0) return p->b[sq_of(4,0)]=='K';
+  return p->b[sq_of(4,7)]=='k';
+}
+
+static int sr_minor_developed(const Pos *p,int side){
+  int i,c;
+  char pc,lp;
+
+  c=0;
+
+  for(i=0;i<64;i++){
+    pc=p->b[i];
+    if(pc=='.') continue;
+    if(piece_side(pc)!=side) continue;
+
+    lp=lower_piece(pc);
+    if(lp!='n' && lp!='b') continue;
+
+    if(side==0){
+      if(i!=sq_of(1,0) && i!=sq_of(6,0) &&
+         i!=sq_of(2,0) && i!=sq_of(5,0)) c++;
+    } else {
+      if(i!=sq_of(1,7) && i!=sq_of(6,7) &&
+         i!=sq_of(2,7) && i!=sq_of(5,7)) c++;
+    }
+  }
+
+  return c;
+}
+
+static int sr_enemy_mobile_center(const Pos *p,int side){
+  int e;
+  e=1-side;
+
+  if(e==0){
+    if(sr_pawn_at(p,3,3,e)) return 1;
+    if(sr_pawn_at(p,4,3,e)) return 1;
+    if(sr_pawn_at(p,3,1,e) && p->b[sq_of(3,2)]=='.') return 1;
+    if(sr_pawn_at(p,4,1,e) && p->b[sq_of(4,2)]=='.') return 1;
+    if(sr_pawn_at(p,2,1,e) && p->b[sq_of(2,2)]=='.') return 1;
+  } else {
+    if(sr_pawn_at(p,3,4,e)) return 1;
+    if(sr_pawn_at(p,4,4,e)) return 1;
+    if(sr_pawn_at(p,3,6,e) && p->b[sq_of(3,5)]=='.') return 1;
+    if(sr_pawn_at(p,4,6,e) && p->b[sq_of(4,5)]=='.') return 1;
+    if(sr_pawn_at(p,2,6,e) && p->b[sq_of(2,5)]=='.') return 1;
+  }
+
+  return 0;
+}
+
+static double sr_backbone_side(const Pos *p,int side){
+  double v;
+
+  v=0.0;
+
+  if(side==0){
+    if(sr_pawn_at(p,4,2,side)) v+=0.55; /* e3 */
+    if(sr_pawn_at(p,2,2,side)) v+=0.38; /* c3 */
+    if(sr_pawn_at(p,3,2,side)) v+=0.30; /* d3 */
+    if(sr_pawn_at(p,4,3,side)) v+=0.45; /* e4 */
+    if(sr_pawn_at(p,3,3,side)) v+=0.35; /* d4 */
+  } else {
+    if(sr_pawn_at(p,4,5,side)) v+=0.55; /* e6 */
+    if(sr_pawn_at(p,2,5,side)) v+=0.38; /* c6 */
+    if(sr_pawn_at(p,3,5,side)) v+=0.30; /* d6 */
+    if(sr_pawn_at(p,4,4,side)) v+=0.45; /* e5 */
+    if(sr_pawn_at(p,3,4,side)) v+=0.35; /* d5 */
+  }
+
+  return v;
+}
+
+static double side_stabilization_relief(const Pos *p,int side){
+  double v,bb;
+  int dev;
+  int king_home;
+  int enemy_mobile;
+
+  bb=sr_backbone_side(p,side);
+  dev=sr_minor_developed(p,side);
+  king_home=sr_king_home(p,side);
+  enemy_mobile=sr_enemy_mobile_center(p,side);
+
+  v=0.0;
+  v+=bb;
+
+  if(enemy_mobile && dev>=2) v+=0.45*bb;
+
+  if(enemy_mobile && king_home && bb<0.20) v-=0.45;
+  if(enemy_mobile && dev>=2 && bb<0.20) v-=0.35;
+
+  if(v>2.0) v=2.0;
+  if(v<-2.0) v=-2.0;
+
+  return v;
+}
+
+static double state_stabilization_relief(const Pos *p,int perspective){
+  int enemy;
+  double mine,opp,v;
+
+  enemy=1-perspective;
+
+  mine=side_stabilization_relief(p,perspective);
+  opp=side_stabilization_relief(p,enemy);
+
+  v=mine-0.65*opp;
+
+  if(v>2.0) v=2.0;
+  if(v<-2.0) v=-2.0;
+
+  return v;
+}
+
 static Phi eval_phi_state(const Pos *p,int perspective){
   Phi z;
   z.value=(double)static_eval(p,perspective)/100.0;
@@ -1660,6 +1795,64 @@ int main(int argc,char **argv){
 
   move_to_uci(&best,uci);
   make_move(&p,&best,&after);
+
+  if(getenv("SQCHESS_EXPLAIN")!=NULL){
+    int me;
+    int opp;
+    double me_burden,opp_burden;
+    double me_transfer,opp_transfer;
+    double me_relief,opp_relief;
+    double me_future,opp_future;
+    double me_activity,opp_activity;
+    double me_coherence,opp_coherence;
+    double me_resilience,opp_resilience;
+    double me_hanging,opp_hanging;
+    double me_tactic,opp_tactic;
+    double me_risk,opp_risk;
+
+    me=p.side;
+    opp=1-me;
+
+    me_burden=side_burden(&after,me);
+    opp_burden=side_burden(&after,opp);
+
+    me_transfer=state_transfer(&after,me);
+    opp_transfer=state_transfer(&after,opp);
+
+    me_relief=state_stabilization_relief(&after,me);
+    opp_relief=state_stabilization_relief(&after,opp);
+
+    me_future=state_future_options(&after,me);
+    opp_future=state_future_options(&after,opp);
+
+    me_activity=state_activity(&after,me);
+    opp_activity=state_activity(&after,opp);
+
+    me_coherence=state_coherence(&after,me);
+    opp_coherence=state_coherence(&after,opp);
+
+    me_resilience=state_resilience(&after,me);
+    opp_resilience=state_resilience(&after,opp);
+
+    me_hanging=hanging_penalty(&after,me);
+    opp_hanging=hanging_penalty(&after,opp);
+
+    me_tactic=state_tactic_pressure(&after,me);
+    opp_tactic=state_tactic_pressure(&after,opp);
+
+    me_risk=move_risk(&after,me);
+    opp_risk=move_risk(&after,opp);
+
+    fprintf(stderr,
+      "EXPLAIN_BOTH move=%s score=%.3f "
+      "me=value:%.3f activity:%.3f coherence:%.3f resilience:%.3f risk:%.3f hanging:%.3f tactic:%.3f burden:%.3f transfer:%.3f relief:%.3f future:%.3f "
+      "opp=activity:%.3f coherence:%.3f resilience:%.3f risk:%.3f hanging:%.3f tactic:%.3f burden:%.3f transfer:%.3f relief:%.3f future:%.3f "
+      "move_metrics=value:%.3f complexity:%.3f risk:%.3f forcing:%.3f stability:%.3f hanging:%.3f tactic:%.3f opening:%.3f\n",
+      uci,bm.score,
+      bm.value,me_activity,me_coherence,me_resilience,me_risk,me_hanging,me_tactic,me_burden,me_transfer,me_relief,me_future,
+      opp_activity,opp_coherence,opp_resilience,opp_risk,opp_hanging,opp_tactic,opp_burden,opp_transfer,opp_relief,opp_future,
+      bm.value,bm.complexity,bm.risk,bm.forcing,bm.stability,bm.hanging,bm.tactic,bm.opening);
+  }
 
   printf("bestmove %s\n",uci);
   printf("score %.3f\n",bm.score);
