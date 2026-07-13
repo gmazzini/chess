@@ -778,7 +778,7 @@ static double opening_penalty(const Pos *before,const Move *m,int perspective){
       if(in_check(&after_probe,1-perspective)) checks=1;
 
       if(!home_from && !capture && !checks){
-        p+=1.40;
+        p+=2.40;
       }
     }
   }
@@ -1688,7 +1688,127 @@ static void *root_worker_main(void *arg){
         combined-=relief_guard;
       }
 
-      if(getenv("SQCHESS_DIAG")!=NULL){
+      /*
+        Minor sortie instability guard:
+        in the early phase, a quiet minor-piece sortie is suspicious
+        if it creates a high hanging exposure without direct forcing.
+
+        This targets false transformations such as an active-looking
+        bishop sortie that later becomes a tempo sink.
+      */
+      {
+        char pc_sortie;
+        char lp_sortie;
+        int quiet_sortie;
+        int minor_sortie;
+        int gives_check_sortie;
+        Pos sortie_after;
+        double sortie_guard;
+        int to_rank_sortie;
+        int advanced_sortie;
+
+        pc_sortie=w->p->b[w->moves[i].from];
+        lp_sortie=lower_piece(pc_sortie);
+
+        minor_sortie=(lp_sortie=='b' || lp_sortie=='n');
+        quiet_sortie=(w->p->b[w->moves[i].to]=='.');
+
+        gives_check_sortie=0;
+        make_move(w->p,&w->moves[i],&sortie_after);
+        if(in_check(&sortie_after,1-w->perspective)) gives_check_sortie=1;
+
+        sortie_guard=0.0;
+        to_rank_sortie=w->moves[i].to/8;
+        advanced_sortie=0;
+
+        if(w->perspective==0 && to_rank_sortie>=4) advanced_sortie=1;
+        if(w->perspective==1 && to_rank_sortie<=3) advanced_sortie=1;
+
+        if(w->p->fullmove<=12 && minor_sortie && quiet_sortie && !gives_check_sortie){
+          if(advanced_sortie && m.hanging>0.75 && m.forcing<0.50){
+            sortie_guard=1.55*(m.hanging-0.75);
+
+            /*
+              Extra decision-level cost if the sortie is not first development.
+              This targets repeated advanced minor moves such as Bd3-b5.
+            */
+            {
+              int home_from_sortie;
+              home_from_sortie=0;
+
+              if(w->perspective==0){
+                if((w->moves[i].from==sq_of(1,0) && pc_sortie=='N') ||
+                   (w->moves[i].from==sq_of(6,0) && pc_sortie=='N') ||
+                   (w->moves[i].from==sq_of(2,0) && pc_sortie=='B') ||
+                   (w->moves[i].from==sq_of(5,0) && pc_sortie=='B')) home_from_sortie=1;
+              } else {
+                if((w->moves[i].from==sq_of(1,7) && pc_sortie=='n') ||
+                   (w->moves[i].from==sq_of(6,7) && pc_sortie=='n') ||
+                   (w->moves[i].from==sq_of(2,7) && pc_sortie=='b') ||
+                   (w->moves[i].from==sq_of(5,7) && pc_sortie=='b')) home_from_sortie=1;
+              }
+
+              if(!home_from_sortie){
+                sortie_guard+=0.85;
+              }
+            }
+
+            combined-=sortie_guard;
+          }
+        }
+
+        if(getenv("SQCHESS_DIAG")!=NULL && sortie_guard>0.0){
+          char sortie_uci[8];
+          move_to_uci(&w->moves[i],sortie_uci);
+          fprintf(stderr,
+            "DIAG_SORTIE_GUARD move=%s hanging=%.3f forcing=%.3f guard=%.3f\n",
+            sortie_uci,m.hanging,m.forcing,sortie_guard);
+        }
+      }
+
+      
+      {
+        /*
+          Toxic capture guard:
+          a minor piece capturing a pawn is not automatically progress.
+          If the resulting state has high hanging exposure and high tactical
+          pressure, the capture is treated as a destructive transformation.
+
+          This targets cases such as Bd3xe4 where the move wins a pawn
+          locally but produces a tactically broken state.
+        */
+        char tox_pc;
+        char tox_cap;
+        char tox_lp;
+        char tox_cap_lp;
+        double toxic_guard;
+
+        tox_pc=w->p->b[w->moves[i].from];
+        tox_cap=w->p->b[w->moves[i].to];
+        tox_lp=lower_piece(tox_pc);
+        tox_cap_lp=lower_piece(tox_cap);
+
+        toxic_guard=0.0;
+
+        if(w->p->fullmove<=16 &&
+           (tox_lp=='b' || tox_lp=='n') &&
+           tox_cap_lp=='p' &&
+           m.hanging>2.50 &&
+           m.tactic>2.00){
+          toxic_guard=1.15*(m.hanging-2.50) + 0.45*(m.tactic-2.00);
+          combined-=toxic_guard;
+        }
+
+        if(getenv("SQCHESS_DIAG")!=NULL && toxic_guard>0.0){
+          char tox_uci[8];
+          move_to_uci(&w->moves[i],tox_uci);
+          fprintf(stderr,
+            "DIAG_TOXIC_CAPTURE move=%s hanging=%.3f tactic=%.3f guard=%.3f\n",
+            tox_uci,m.hanging,m.tactic,toxic_guard);
+        }
+      }
+
+if(getenv("SQCHESS_DIAG")!=NULL){
         char diag_uci[8];
         move_to_uci(&w->moves[i],diag_uci);
         fprintf(stderr,
