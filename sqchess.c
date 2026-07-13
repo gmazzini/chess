@@ -1622,6 +1622,44 @@ static void *root_worker_main(void *arg){
     */
     combined=0.55*m.score + 0.45*search + 0.55*state_transfer(&after,w->perspective);
 
+    /*
+      Decision v3:
+      keep the stable decision unchanged, but add a small guard against
+      transformed states where our stabilization relief is much worse
+      than the opponent's.
+
+      This is deliberately one-sided:
+      - no reward for positive relief_balance;
+      - no change when relief_balance is neutral;
+      - only a penalty for clearly bad asymmetric states.
+    */
+    {
+      double relief_me;
+      double relief_opp;
+      double relief_balance;
+      double relief_guard;
+
+      relief_me=state_stabilization_relief(&after,w->perspective);
+      relief_opp=state_stabilization_relief(&after,1-w->perspective);
+      relief_balance=relief_me-relief_opp;
+
+      relief_guard=0.0;
+      if(relief_balance < -1.50){
+        relief_guard=0.22*(-1.50-relief_balance);
+        combined-=relief_guard;
+      }
+
+      if(getenv("SQCHESS_DIAG")!=NULL){
+        char diag_uci[8];
+        move_to_uci(&w->moves[i],diag_uci);
+        fprintf(stderr,
+          "DIAG_DECISION_V3 move=%s search=%.3f imm=%.3f transfer=%.3f "
+          "relief_balance=%.3f relief_guard=%.3f combined=%.3f\n",
+          diag_uci,search,m.score,state_transfer(&after,w->perspective),
+          relief_balance,relief_guard,combined);
+      }
+    }
+
     if(!w->found || combined>w->best_score){
       w->found=1;
       w->best_score=combined;
