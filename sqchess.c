@@ -710,7 +710,7 @@ static double opening_penalty(const Pos *before,const Move *m,int perspective){
   pc=before->b[m->from];
   cap=before->b[m->to];
   lp=lower_piece(pc);
-  early=before->fullmove<=8;
+  early=before->fullmove<=12;
   p=0.0;
   if(!early) return 0.0;
 
@@ -744,7 +744,46 @@ static double opening_penalty(const Pos *before,const Move *m,int perspective){
 
   if(lp=='k' && !(m->flags & FLAG_CASTLE)) p+=1.0;
 
-  return p;
+  
+  {
+    /* repeat_minor_guard:
+       Early transformation cost for moving an already-developed minor
+       piece again without capture and without direct check.
+
+       It penalizes wasted transformation/tempo loops such as Bb5-d3-b5,
+       while leaving first development, captures and checks untouched.
+    */
+    int home_from;
+    int capture;
+    int checks;
+    Pos after_probe;
+
+    home_from=0;
+    if(lp=='b' || lp=='n'){
+      if(perspective==0){
+        if((m->from==sq_of(1,0) && pc=='N') ||
+           (m->from==sq_of(6,0) && pc=='N') ||
+           (m->from==sq_of(2,0) && pc=='B') ||
+           (m->from==sq_of(5,0) && pc=='B')) home_from=1;
+      } else {
+        if((m->from==sq_of(1,7) && pc=='n') ||
+           (m->from==sq_of(6,7) && pc=='n') ||
+           (m->from==sq_of(2,7) && pc=='b') ||
+           (m->from==sq_of(5,7) && pc=='b')) home_from=1;
+      }
+
+      capture=(cap!='.');
+      checks=0;
+      make_move(before,m,&after_probe);
+      if(in_check(&after_probe,1-perspective)) checks=1;
+
+      if(!home_from && !capture && !checks){
+        p+=1.40;
+      }
+    }
+  }
+
+return p;
 }
 
 static double move_stability(const Pos *after,int perspective){
