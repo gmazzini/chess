@@ -1781,7 +1781,10 @@ static void *root_worker_main(void *arg){
         char tox_cap;
         char tox_lp;
         char tox_cap_lp;
+        int tox_checks;
+        Pos tox_after;
         double toxic_guard;
+        double toxic_pressure;
 
         tox_pc=w->p->b[w->moves[i].from];
         tox_cap=w->p->b[w->moves[i].to];
@@ -1790,13 +1793,43 @@ static void *root_worker_main(void *arg){
 
         toxic_guard=0.0;
 
-        if(w->p->fullmove<=16 &&
-           (tox_lp=='b' || tox_lp=='n') &&
-           tox_cap_lp=='p' &&
-           m.hanging>2.50 &&
-           m.tactic>2.00){
-          toxic_guard=1.15*(m.hanging-2.50) + 0.45*(m.tactic-2.00);
-          combined-=toxic_guard;
+        tox_checks=0;
+        if(tox_cap!='.'){
+          make_move(w->p,&w->moves[i],&tox_after);
+          if(in_check(&tox_after,1-w->perspective)) tox_checks=1;
+        }
+
+        /*
+          General toxic capture:
+          a capture is not automatically progress. If it is not check,
+          not strongly forcing, and the resulting state has high hanging
+          exposure plus high tactical pressure, treat it as destructive.
+
+          The previous specific minor-captures-pawn case is kept inside this
+          more general mechanism with a slightly lower threshold.
+        */
+        toxic_pressure=0.0;
+
+        if(w->p->fullmove<=30 &&
+           tox_cap!='.' &&
+           !tox_checks &&
+           m.forcing<0.90){
+
+          if(m.hanging>3.00 && m.tactic>2.30){
+            toxic_pressure=(m.hanging-3.00) + 0.55*(m.tactic-2.30);
+          }
+
+          if((tox_lp=='b' || tox_lp=='n') &&
+             tox_cap_lp=='p' &&
+             m.hanging>2.50 &&
+             m.tactic>2.00){
+            toxic_pressure+=(m.hanging-2.50) + 0.45*(m.tactic-2.00);
+          }
+
+          if(toxic_pressure>0.0){
+            toxic_guard=1.05*toxic_pressure;
+            combined-=toxic_guard;
+          }
         }
 
         if(getenv("SQCHESS_DIAG")!=NULL && toxic_guard>0.0){
