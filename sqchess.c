@@ -1841,6 +1841,97 @@ static void *root_worker_main(void *arg){
         }
       }
 
+
+      {
+        /*
+          Pawn fork threat guard:
+          after our candidate move, check whether the opponent has a quiet
+          legal pawn push that would attack two of our minor pieces.
+
+          This is a trajectory/state guard. It targets unresolved central
+          pawn forks such as ...e5-e4 attacking Bd3 and Nf3 after castling.
+        */
+        Pos fork_q;
+        Move fork_moves[MAX_MOVES];
+        int fork_n;
+        int fork_j;
+        int opp_side;
+        int to_file;
+        int to_rank;
+        int atk_rank;
+        int atk_file;
+        int attacked_minors;
+        int k;
+        int atk_sq;
+        char pawn_pc;
+        char victim;
+        double fork_guard;
+        double fork_max;
+
+        fork_guard=0.0;
+        fork_max=0.0;
+        opp_side=1-w->perspective;
+
+        fork_q=after;
+        fork_q.side=opp_side;
+        gen_legal(&fork_q,fork_moves,&fork_n);
+
+        for(fork_j=0;fork_j<fork_n;fork_j++){
+          pawn_pc=after.b[fork_moves[fork_j].from];
+
+          if(lower_piece(pawn_pc)!='p') continue;
+
+          /*
+            Quiet pawn push only: same file, empty destination.
+            Captures are handled by tactical/capture guards elsewhere.
+          */
+          if((fork_moves[fork_j].from%8)!=(fork_moves[fork_j].to%8)) continue;
+          if(after.b[fork_moves[fork_j].to]!='.') continue;
+
+          to_file=fork_moves[fork_j].to%8;
+          to_rank=fork_moves[fork_j].to/8;
+
+          if(opp_side==0) atk_rank=to_rank+1;
+          else atk_rank=to_rank-1;
+
+          if(atk_rank<0 || atk_rank>7) continue;
+
+          attacked_minors=0;
+
+          for(k=-1;k<=1;k+=2){
+            atk_file=to_file+k;
+            if(atk_file<0 || atk_file>7) continue;
+
+            atk_sq=sq_of(atk_file,atk_rank);
+            victim=after.b[atk_sq];
+
+            if(w->perspective==0){
+              if(victim=='N' || victim=='B') attacked_minors++;
+            } else {
+              if(victim=='n' || victim=='b') attacked_minors++;
+            }
+          }
+
+          if(attacked_minors>=2){
+            fork_guard=1.75 + 0.35*(attacked_minors-2);
+            if(m.hanging>1.0) fork_guard+=0.25*(m.hanging-1.0);
+            if(fork_guard>fork_max) fork_max=fork_guard;
+          }
+        }
+
+        if(w->p->fullmove<=20 && fork_max>0.0){
+          combined-=fork_max;
+        }
+
+        if(getenv("SQCHESS_DIAG")!=NULL && fork_max>0.0){
+          char fork_uci[8];
+          move_to_uci(&w->moves[i],fork_uci);
+          fprintf(stderr,
+            "DIAG_PAWN_FORK_THREAT move=%s hanging=%.3f guard=%.3f\n",
+            fork_uci,m.hanging,fork_max);
+        }
+      }
+
 if(getenv("SQCHESS_DIAG")!=NULL){
         char diag_uci[8];
         move_to_uci(&w->moves[i],diag_uci);
