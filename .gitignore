@@ -1,3 +1,9 @@
 *
 !sqchess.c
 !.gitignore
+
+# Generated game logs / diagnostics
+play_*.txt
+diag_*.txt
+sq_*.txt
+report_*.txt
