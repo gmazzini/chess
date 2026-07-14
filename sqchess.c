@@ -2057,6 +2057,204 @@ static void *root_worker_main(void *arg){
         }
       }
 
+
+
+      {
+        /*
+          Shield vacancy intrusion guard:
+          a two-square pawn push on the same wing as our castled king may
+          vacate an entry square, typically h2 after h2-h4. If an enemy queen
+          or bishop has an immediate legal move to that vacated square, the
+          move receives a small transformation-state penalty.
+        */
+        double svi_guard;
+        char svi_pc;
+        int svi_from_file;
+        int svi_to_file;
+        int svi_from_rank;
+        int svi_to_rank;
+        int svi_king_sq;
+        int svi_king_file;
+        int svi_quiet;
+        int svi_double_shield;
+        int svi_same_king_wing;
+        int svi_intrusion;
+        Pos svi_opp;
+        Move svi_moves[MAX_MOVES];
+        int svi_n;
+        int svi_j;
+
+        svi_guard=0.0;
+        svi_intrusion=0;
+
+        svi_pc=w->p->b[w->moves[i].from];
+        svi_from_file=file_of(w->moves[i].from);
+        svi_to_file=file_of(w->moves[i].to);
+        svi_from_rank=rank_of(w->moves[i].from);
+        svi_to_rank=rank_of(w->moves[i].to);
+        svi_king_sq=find_king(w->p,w->perspective);
+        svi_king_file=svi_king_sq>=0 ? file_of(svi_king_sq) : -1;
+
+        svi_quiet=((w->moves[i].flags & FLAG_CAPTURE)==0 &&
+                   (w->moves[i].flags & FLAG_EP)==0 &&
+                   (w->moves[i].flags & FLAG_PROMO)==0);
+
+        svi_double_shield=0;
+        if(w->perspective==0 &&
+           svi_from_rank==1 &&
+           svi_to_rank==3 &&
+           svi_from_file==svi_to_file){
+          svi_double_shield=1;
+        }
+        if(w->perspective==1 &&
+           svi_from_rank==6 &&
+           svi_to_rank==4 &&
+           svi_from_file==svi_to_file){
+          svi_double_shield=1;
+        }
+
+        svi_same_king_wing=0;
+        if(svi_king_file>=5 && svi_from_file>=5) svi_same_king_wing=1;
+        if(svi_king_file<=2 && svi_from_file<=2) svi_same_king_wing=1;
+
+        if(w->p->fullmove<=30 &&
+           lower_piece(svi_pc)=='p' &&
+           svi_quiet &&
+           svi_double_shield &&
+           svi_same_king_wing &&
+           m.forcing<0.20){
+          svi_opp=after;
+          svi_opp.side=1-w->perspective;
+          gen_legal(&svi_opp,svi_moves,&svi_n);
+
+          for(svi_j=0;svi_j<svi_n;svi_j++){
+            char apc;
+            apc=svi_opp.b[svi_moves[svi_j].from];
+            if(svi_moves[svi_j].to==w->moves[i].from &&
+               (lower_piece(apc)=='q' || lower_piece(apc)=='b')){
+              svi_intrusion=1;
+              break;
+            }
+          }
+
+          if(svi_intrusion){
+            svi_guard=0.06;
+            if(m.forcing<0.0) svi_guard+=0.04*(-m.forcing);
+            if(m.tactic>0.80) svi_guard+=0.03*(m.tactic-0.80);
+            if(m.risk>0.04) svi_guard+=0.15*(m.risk-0.04);
+            if(svi_guard>0.18) svi_guard=0.18;
+            combined-=svi_guard;
+          }
+        }
+
+        if(getenv("SQCHESS_DIAG")!=NULL && svi_guard>0.0){
+          char svi_uci[8];
+          move_to_uci(&w->moves[i],svi_uci);
+          fprintf(stderr,
+            "DIAG_SHIELD_VACANCY_INTRUSION move=%s forcing=%.3f risk=%.3f tactic=%.3f guard=%.3f\n",
+            svi_uci,m.forcing,m.risk,m.tactic,svi_guard);
+        }
+      }
+
+      {
+        /*
+          First shield hook guard:
+          a first quiet pawn push on the same wing as our king has a small
+          cost when the destination square can be immediately captured by an
+          enemy bishop or queen. This targets h2-h3 when the c8-h3 diagonal
+          is open, without penalizing the already-existing repeated shield
+          drift rule.
+        */
+        double fsh_guard;
+        char fsh_pc;
+        int fsh_from_file;
+        int fsh_to_file;
+        int fsh_from_rank;
+        int fsh_to_rank;
+        int fsh_king_sq;
+        int fsh_king_file;
+        int fsh_quiet;
+        int fsh_first_push;
+        int fsh_same_king_wing;
+        int fsh_hooked;
+        Pos fsh_opp;
+        Move fsh_moves[MAX_MOVES];
+        int fsh_n;
+        int fsh_j;
+
+        fsh_guard=0.0;
+        fsh_hooked=0;
+
+        fsh_pc=w->p->b[w->moves[i].from];
+        fsh_from_file=file_of(w->moves[i].from);
+        fsh_to_file=file_of(w->moves[i].to);
+        fsh_from_rank=rank_of(w->moves[i].from);
+        fsh_to_rank=rank_of(w->moves[i].to);
+        fsh_king_sq=find_king(w->p,w->perspective);
+        fsh_king_file=fsh_king_sq>=0 ? file_of(fsh_king_sq) : -1;
+
+        fsh_quiet=((w->moves[i].flags & FLAG_CAPTURE)==0 &&
+                   (w->moves[i].flags & FLAG_EP)==0 &&
+                   (w->moves[i].flags & FLAG_PROMO)==0);
+
+        fsh_first_push=0;
+        if(w->perspective==0 &&
+           fsh_from_rank==1 &&
+           fsh_to_rank==2 &&
+           fsh_from_file==fsh_to_file){
+          fsh_first_push=1;
+        }
+        if(w->perspective==1 &&
+           fsh_from_rank==6 &&
+           fsh_to_rank==5 &&
+           fsh_from_file==fsh_to_file){
+          fsh_first_push=1;
+        }
+
+        fsh_same_king_wing=0;
+        if(fsh_king_file>=5 && fsh_from_file>=5) fsh_same_king_wing=1;
+        if(fsh_king_file<=2 && fsh_from_file<=2) fsh_same_king_wing=1;
+
+        if(w->p->fullmove<=30 &&
+           lower_piece(fsh_pc)=='p' &&
+           fsh_quiet &&
+           fsh_first_push &&
+           fsh_same_king_wing &&
+           m.forcing<0.20){
+          fsh_opp=after;
+          fsh_opp.side=1-w->perspective;
+          gen_legal(&fsh_opp,fsh_moves,&fsh_n);
+
+          for(fsh_j=0;fsh_j<fsh_n;fsh_j++){
+            char apc;
+            apc=fsh_opp.b[fsh_moves[fsh_j].from];
+            if(fsh_moves[fsh_j].to==w->moves[i].to &&
+               ((fsh_moves[fsh_j].flags & FLAG_CAPTURE)!=0) &&
+               (lower_piece(apc)=='b' || lower_piece(apc)=='q')){
+              fsh_hooked=1;
+              break;
+            }
+          }
+
+          if(fsh_hooked){
+            fsh_guard=0.06;
+            if(m.forcing<0.0) fsh_guard+=0.06*(-m.forcing);
+            if(m.tactic>0.80) fsh_guard+=0.04*(m.tactic-0.80);
+            if(m.risk>0.04) fsh_guard+=0.20*(m.risk-0.04);
+            if(fsh_guard>0.22) fsh_guard=0.22;
+            combined-=fsh_guard;
+          }
+        }
+
+        if(getenv("SQCHESS_DIAG")!=NULL && fsh_guard>0.0){
+          char fsh_uci[8];
+          move_to_uci(&w->moves[i],fsh_uci);
+          fprintf(stderr,
+            "DIAG_FIRST_SHIELD_HOOK move=%s forcing=%.3f risk=%.3f tactic=%.3f guard=%.3f\n",
+            fsh_uci,m.forcing,m.risk,m.tactic,fsh_guard);
+        }
+      }
+
 if(getenv("SQCHESS_DIAG")!=NULL){
         char diag_uci[8];
         move_to_uci(&w->moves[i],diag_uci);
