@@ -2015,6 +2015,48 @@ static void *root_worker_main(void *arg){
         }
       }
 
+
+      {
+        /*
+          Forcing capture mirage guard:
+          a capture can look forcing and materially attractive while the
+          resulting state is overhanging and has negative transfer.
+          This is deliberately small: it should only break close ties.
+        */
+        double fcm_guard;
+        int fcm_is_capture;
+        int fcm_gives_check;
+        double fcm_transfer;
+
+        fcm_guard=0.0;
+        fcm_is_capture=((w->moves[i].flags & FLAG_CAPTURE)!=0 ||
+                        (w->moves[i].flags & FLAG_EP)!=0);
+        fcm_gives_check=in_check(&after,1-w->perspective);
+        fcm_transfer=state_transfer(&after,w->perspective);
+
+        if(w->p->fullmove<=30 &&
+           fcm_is_capture &&
+           m.forcing>1.00 &&
+           m.hanging>4.00 &&
+           m.tactic>2.00 &&
+           fcm_transfer<-0.50){
+          fcm_guard=0.10;
+          fcm_guard+=0.08*(m.hanging-4.00);
+          fcm_guard+=0.05*(m.tactic-2.00);
+          if(m.forcing>1.50) fcm_guard+=0.08*(m.forcing-1.50);
+          if(fcm_guard>0.55) fcm_guard=0.55;
+          combined-=fcm_guard;
+        }
+
+        if(getenv("SQCHESS_DIAG")!=NULL && fcm_guard>0.0){
+          char fcm_uci[8];
+          move_to_uci(&w->moves[i],fcm_uci);
+          fprintf(stderr,
+            "DIAG_FORCING_CAPTURE_MIRAGE move=%s check=%d forcing=%.3f hanging=%.3f tactic=%.3f transfer=%.3f guard=%.3f\n",
+            fcm_uci,fcm_gives_check,m.forcing,m.hanging,m.tactic,fcm_transfer,fcm_guard);
+        }
+      }
+
 if(getenv("SQCHESS_DIAG")!=NULL){
         char diag_uci[8];
         move_to_uci(&w->moves[i],diag_uci);
