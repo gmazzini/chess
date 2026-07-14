@@ -710,7 +710,7 @@ static double opening_penalty(const Pos *before,const Move *m,int perspective){
   pc=before->b[m->from];
   cap=before->b[m->to];
   lp=lower_piece(pc);
-  early=before->fullmove<=8;
+  early=before->fullmove<=12;
   p=0.0;
   if(!early) return 0.0;
 
@@ -744,7 +744,46 @@ static double opening_penalty(const Pos *before,const Move *m,int perspective){
 
   if(lp=='k' && !(m->flags & FLAG_CASTLE)) p+=1.0;
 
-  return p;
+  
+  {
+    /* repeat_minor_guard:
+       Early transformation cost for moving an already-developed minor
+       piece again without capture and without direct check.
+
+       It penalizes wasted transformation/tempo loops such as Bb5-d3-b5,
+       while leaving first development, captures and checks untouched.
+    */
+    int home_from;
+    int capture;
+    int checks;
+    Pos after_probe;
+
+    home_from=0;
+    if(lp=='b' || lp=='n'){
+      if(perspective==0){
+        if((m->from==sq_of(1,0) && pc=='N') ||
+           (m->from==sq_of(6,0) && pc=='N') ||
+           (m->from==sq_of(2,0) && pc=='B') ||
+           (m->from==sq_of(5,0) && pc=='B')) home_from=1;
+      } else {
+        if((m->from==sq_of(1,7) && pc=='n') ||
+           (m->from==sq_of(6,7) && pc=='n') ||
+           (m->from==sq_of(2,7) && pc=='b') ||
+           (m->from==sq_of(5,7) && pc=='b')) home_from=1;
+      }
+
+      capture=(cap!='.');
+      checks=0;
+      make_move(before,m,&after_probe);
+      if(in_check(&after_probe,1-perspective)) checks=1;
+
+      if(!home_from && !capture && !checks){
+        p+=2.40;
+      }
+    }
+  }
+
+return p;
 }
 
 static double move_stability(const Pos *after,int perspective){
@@ -1621,6 +1660,413 @@ static void *root_worker_main(void *arg){
       Non viene propagato nelle foglie, per evitare rumore e costo esplosivo.
     */
     combined=0.55*m.score + 0.45*search + 0.55*state_transfer(&after,w->perspective);
+
+    /*
+      Decision v3:
+      keep the stable decision unchanged, but add a small guard against
+      transformed states where our stabilization relief is much worse
+      than the opponent's.
+
+      This is deliberately one-sided:
+      - no reward for positive relief_balance;
+      - no change when relief_balance is neutral;
+      - only a penalty for clearly bad asymmetric states.
+    */
+    {
+      double relief_me;
+      double relief_opp;
+      double relief_balance;
+      double relief_guard;
+
+      relief_me=state_stabilization_relief(&after,w->perspective);
+      relief_opp=state_stabilization_relief(&after,1-w->perspective);
+      relief_balance=relief_me-relief_opp;
+
+      relief_guard=0.0;
+      if(relief_balance < -1.50){
+        relief_guard=0.22*(-1.50-relief_balance);
+        combined-=relief_guard;
+      }
+
+      /*
+        Minor sortie instability guard:
+        in the early phase, a quiet minor-piece sortie is suspicious
+        if it creates a high hanging exposure without direct forcing.
+
+        This targets false transformations such as an active-looking
+        bishop sortie that later becomes a tempo sink.
+      */
+      {
+        char pc_sortie;
+        char lp_sortie;
+        int quiet_sortie;
+        int minor_sortie;
+        int gives_check_sortie;
+        Pos sortie_after;
+        double sortie_guard;
+        int to_rank_sortie;
+        int advanced_sortie;
+
+        pc_sortie=w->p->b[w->moves[i].from];
+        lp_sortie=lower_piece(pc_sortie);
+
+        minor_sortie=(lp_sortie=='b' || lp_sortie=='n');
+        quiet_sortie=(w->p->b[w->moves[i].to]=='.');
+
+        gives_check_sortie=0;
+        make_move(w->p,&w->moves[i],&sortie_after);
+        if(in_check(&sortie_after,1-w->perspective)) gives_check_sortie=1;
+
+        sortie_guard=0.0;
+        to_rank_sortie=w->moves[i].to/8;
+        advanced_sortie=0;
+
+        if(w->perspective==0 && to_rank_sortie>=4) advanced_sortie=1;
+        if(w->perspective==1 && to_rank_sortie<=3) advanced_sortie=1;
+
+        if(w->p->fullmove<=30 && minor_sortie && quiet_sortie && !gives_check_sortie){
+          if(advanced_sortie && m.hanging>0.75 && m.forcing<0.50){
+            if(w->p->fullmove<=12) sortie_guard=1.55*(m.hanging-0.75); else sortie_guard=0.0;
+
+            /*
+              Extra decision-level cost if the sortie is not first development.
+              This targets repeated advanced minor moves such as Bd3-b5.
+            */
+            {
+              int home_from_sortie;
+              home_from_sortie=0;
+
+              if(w->perspective==0){
+                if((w->moves[i].from==sq_of(1,0) && pc_sortie=='N') ||
+                   (w->moves[i].from==sq_of(6,0) && pc_sortie=='N') ||
+                   (w->moves[i].from==sq_of(2,0) && pc_sortie=='B') ||
+                   (w->moves[i].from==sq_of(5,0) && pc_sortie=='B')) home_from_sortie=1;
+              } else {
+                if((w->moves[i].from==sq_of(1,7) && pc_sortie=='n') ||
+                   (w->moves[i].from==sq_of(6,7) && pc_sortie=='n') ||
+                   (w->moves[i].from==sq_of(2,7) && pc_sortie=='b') ||
+                   (w->moves[i].from==sq_of(5,7) && pc_sortie=='b')) home_from_sortie=1;
+              }
+
+              if(!home_from_sortie){
+                if(w->p->fullmove<=12) sortie_guard+=0.85;
+
+                /*
+                  Midgame repeated minor sortie guard:
+                  if an already-developed minor piece makes a quiet advanced
+                  sortie in a tactically hot state, treat it as a likely false
+                  transformation. This targets moves such as Bd2-g5 when the
+                  center is already unstable and tactical pressure is high.
+                */
+                if(w->p->fullmove>12 && w->p->fullmove<=30 && m.tactic>2.20 && m.hanging>1.00){
+                  sortie_guard+=0.55*(m.tactic-2.20) + 0.25*(m.hanging-1.00);
+                }
+              }
+            }
+
+            combined-=sortie_guard;
+          }
+        }
+
+        if(getenv("SQCHESS_DIAG")!=NULL && sortie_guard>0.0){
+          char sortie_uci[8];
+          move_to_uci(&w->moves[i],sortie_uci);
+          fprintf(stderr,
+            "DIAG_SORTIE_GUARD move=%s hanging=%.3f forcing=%.3f guard=%.3f\n",
+            sortie_uci,m.hanging,m.forcing,sortie_guard);
+        }
+      }
+
+      
+      {
+        /*
+          Toxic capture guard:
+          a minor piece capturing a pawn is not automatically progress.
+          If the resulting state has high hanging exposure and high tactical
+          pressure, the capture is treated as a destructive transformation.
+
+          This targets cases such as Bd3xe4 where the move wins a pawn
+          locally but produces a tactically broken state.
+        */
+        char tox_pc;
+        char tox_cap;
+        char tox_lp;
+        char tox_cap_lp;
+        int tox_checks;
+        Pos tox_after;
+        double toxic_guard;
+        double toxic_pressure;
+
+        tox_pc=w->p->b[w->moves[i].from];
+        tox_cap=w->p->b[w->moves[i].to];
+        tox_lp=lower_piece(tox_pc);
+        tox_cap_lp=lower_piece(tox_cap);
+
+        toxic_guard=0.0;
+
+        tox_checks=0;
+        if(tox_cap!='.'){
+          make_move(w->p,&w->moves[i],&tox_after);
+          if(in_check(&tox_after,1-w->perspective)) tox_checks=1;
+        }
+
+        /*
+          General toxic capture:
+          a capture is not automatically progress. If it is not check,
+          not strongly forcing, and the resulting state has high hanging
+          exposure plus high tactical pressure, treat it as destructive.
+
+          The previous specific minor-captures-pawn case is kept inside this
+          more general mechanism with a slightly lower threshold.
+        */
+        toxic_pressure=0.0;
+
+        if(w->p->fullmove<=30 &&
+           tox_cap!='.' &&
+           !tox_checks &&
+           m.forcing<0.90){
+
+          if(m.hanging>3.00 && m.tactic>2.30){
+            toxic_pressure=(m.hanging-3.00) + 0.55*(m.tactic-2.30);
+          }
+
+          if((tox_lp=='b' || tox_lp=='n') &&
+             tox_cap_lp=='p' &&
+             m.hanging>2.50 &&
+             m.tactic>2.00){
+            toxic_pressure+=(m.hanging-2.50) + 0.45*(m.tactic-2.00);
+          }
+
+          if(toxic_pressure>0.0){
+            toxic_guard=1.05*toxic_pressure;
+            combined-=toxic_guard;
+          }
+        }
+
+        if(getenv("SQCHESS_DIAG")!=NULL && toxic_guard>0.0){
+          char tox_uci[8];
+          move_to_uci(&w->moves[i],tox_uci);
+          fprintf(stderr,
+            "DIAG_TOXIC_CAPTURE move=%s hanging=%.3f tactic=%.3f guard=%.3f\n",
+            tox_uci,m.hanging,m.tactic,toxic_guard);
+        }
+      }
+
+
+      {
+        /*
+          Pawn fork threat guard:
+          after our candidate move, check whether the opponent has a quiet
+          legal pawn push that would attack two of our minor pieces.
+
+          This is a trajectory/state guard. It targets unresolved central
+          pawn forks such as ...e5-e4 attacking Bd3 and Nf3 after castling.
+        */
+        Pos fork_q;
+        Move fork_moves[MAX_MOVES];
+        int fork_n;
+        int fork_j;
+        int opp_side;
+        int to_file;
+        int to_rank;
+        int atk_rank;
+        int atk_file;
+        int attacked_minors;
+        int k;
+        int atk_sq;
+        char pawn_pc;
+        char victim;
+        double fork_guard;
+        double fork_max;
+
+        fork_guard=0.0;
+        fork_max=0.0;
+        opp_side=1-w->perspective;
+
+        fork_q=after;
+        fork_q.side=opp_side;
+        gen_legal(&fork_q,fork_moves,&fork_n);
+
+        for(fork_j=0;fork_j<fork_n;fork_j++){
+          pawn_pc=after.b[fork_moves[fork_j].from];
+
+          if(lower_piece(pawn_pc)!='p') continue;
+
+          /*
+            Quiet pawn push only: same file, empty destination.
+            Captures are handled by tactical/capture guards elsewhere.
+          */
+          if((fork_moves[fork_j].from%8)!=(fork_moves[fork_j].to%8)) continue;
+          if(after.b[fork_moves[fork_j].to]!='.') continue;
+
+          to_file=fork_moves[fork_j].to%8;
+          to_rank=fork_moves[fork_j].to/8;
+
+          if(opp_side==0) atk_rank=to_rank+1;
+          else atk_rank=to_rank-1;
+
+          if(atk_rank<0 || atk_rank>7) continue;
+
+          attacked_minors=0;
+
+          for(k=-1;k<=1;k+=2){
+            atk_file=to_file+k;
+            if(atk_file<0 || atk_file>7) continue;
+
+            atk_sq=sq_of(atk_file,atk_rank);
+            victim=after.b[atk_sq];
+
+            if(w->perspective==0){
+              if(victim=='N' || victim=='B') attacked_minors++;
+            } else {
+              if(victim=='n' || victim=='b') attacked_minors++;
+            }
+          }
+
+          if(attacked_minors>=2){
+            fork_guard=1.75 + 0.35*(attacked_minors-2);
+            if(m.hanging>1.0) fork_guard+=0.25*(m.hanging-1.0);
+            if(fork_guard>fork_max) fork_max=fork_guard;
+          }
+        }
+
+        if(w->p->fullmove<=20 && fork_max>0.0){
+          combined-=fork_max;
+        }
+
+        if(getenv("SQCHESS_DIAG")!=NULL && fork_max>0.0){
+          char fork_uci[8];
+          move_to_uci(&w->moves[i],fork_uci);
+          fprintf(stderr,
+            "DIAG_PAWN_FORK_THREAT move=%s hanging=%.3f guard=%.3f\n",
+            fork_uci,m.hanging,fork_max);
+        }
+      }
+
+
+
+      {
+        /*
+          Shield drift guard:
+          a quiet second pawn push on the same wing as our king is a small
+          transformation cost when it is non-forcing. This targets passive
+          shield drift such as h3-h4 after castling, without touching the
+          first luft move h2-h3 or forced/capturing pawn moves.
+        */
+        double shield_drift_guard;
+        char sd_pc;
+        int sd_from_file;
+        int sd_to_file;
+        int sd_from_rank;
+        int sd_to_rank;
+        int sd_king_sq;
+        int sd_king_file;
+        int sd_quiet;
+        int sd_repeated_push;
+        int sd_same_king_wing;
+
+        shield_drift_guard=0.0;
+        sd_pc=w->p->b[w->moves[i].from];
+        sd_from_file=file_of(w->moves[i].from);
+        sd_to_file=file_of(w->moves[i].to);
+        sd_from_rank=rank_of(w->moves[i].from);
+        sd_to_rank=rank_of(w->moves[i].to);
+        sd_king_sq=find_king(w->p,w->perspective);
+        sd_king_file=sd_king_sq>=0 ? file_of(sd_king_sq) : -1;
+
+        sd_quiet=((w->moves[i].flags & FLAG_CAPTURE)==0 &&
+                  (w->moves[i].flags & FLAG_EP)==0 &&
+                  (w->moves[i].flags & FLAG_PROMO)==0);
+
+        sd_repeated_push=0;
+        if(w->perspective==0 && sd_from_rank>1 &&
+           sd_to_rank==sd_from_rank+1 && sd_from_file==sd_to_file){
+          sd_repeated_push=1;
+        }
+        if(w->perspective==1 && sd_from_rank<6 &&
+           sd_to_rank==sd_from_rank-1 && sd_from_file==sd_to_file){
+          sd_repeated_push=1;
+        }
+
+        sd_same_king_wing=0;
+        if(sd_king_file>=5 && sd_from_file>=5) sd_same_king_wing=1;
+        if(sd_king_file<=2 && sd_from_file<=2) sd_same_king_wing=1;
+
+        if(w->p->fullmove<=35 &&
+           lower_piece(sd_pc)=='p' &&
+           sd_quiet &&
+           sd_repeated_push &&
+           sd_same_king_wing &&
+           m.forcing<0.0){
+          shield_drift_guard=0.16;
+          shield_drift_guard+=0.18*(-m.forcing);
+          if(m.risk>0.04) shield_drift_guard+=0.40*(m.risk-0.04);
+          if(m.tactic>0.80) shield_drift_guard+=0.10*(m.tactic-0.80);
+          if(shield_drift_guard>0.45) shield_drift_guard=0.45;
+          combined-=shield_drift_guard;
+        }
+
+        if(getenv("SQCHESS_DIAG")!=NULL && shield_drift_guard>0.0){
+          char sd_uci[8];
+          move_to_uci(&w->moves[i],sd_uci);
+          fprintf(stderr,
+            "DIAG_SHIELD_DRIFT move=%s forcing=%.3f risk=%.3f tactic=%.3f guard=%.3f\n",
+            sd_uci,m.forcing,m.risk,m.tactic,shield_drift_guard);
+        }
+      }
+
+
+      {
+        /*
+          Forcing capture mirage guard:
+          a capture can look forcing and materially attractive while the
+          resulting state is overhanging and has negative transfer.
+          This is deliberately small: it should only break close ties.
+        */
+        double fcm_guard;
+        int fcm_is_capture;
+        int fcm_gives_check;
+        double fcm_transfer;
+
+        fcm_guard=0.0;
+        fcm_is_capture=((w->moves[i].flags & FLAG_CAPTURE)!=0 ||
+                        (w->moves[i].flags & FLAG_EP)!=0);
+        fcm_gives_check=in_check(&after,1-w->perspective);
+        fcm_transfer=state_transfer(&after,w->perspective);
+
+        if(w->p->fullmove<=30 &&
+           fcm_is_capture &&
+           m.forcing>1.00 &&
+           m.hanging>4.00 &&
+           m.tactic>2.00 &&
+           fcm_transfer<-0.50){
+          fcm_guard=0.10;
+          fcm_guard+=0.08*(m.hanging-4.00);
+          fcm_guard+=0.05*(m.tactic-2.00);
+          if(m.forcing>1.50) fcm_guard+=0.08*(m.forcing-1.50);
+          if(fcm_guard>0.55) fcm_guard=0.55;
+          combined-=fcm_guard;
+        }
+
+        if(getenv("SQCHESS_DIAG")!=NULL && fcm_guard>0.0){
+          char fcm_uci[8];
+          move_to_uci(&w->moves[i],fcm_uci);
+          fprintf(stderr,
+            "DIAG_FORCING_CAPTURE_MIRAGE move=%s check=%d forcing=%.3f hanging=%.3f tactic=%.3f transfer=%.3f guard=%.3f\n",
+            fcm_uci,fcm_gives_check,m.forcing,m.hanging,m.tactic,fcm_transfer,fcm_guard);
+        }
+      }
+
+if(getenv("SQCHESS_DIAG")!=NULL){
+        char diag_uci[8];
+        move_to_uci(&w->moves[i],diag_uci);
+        fprintf(stderr,
+          "DIAG_DECISION_V3 move=%s search=%.3f imm=%.3f transfer=%.3f "
+          "relief_balance=%.3f relief_guard=%.3f combined=%.3f\n",
+          diag_uci,search,m.score,state_transfer(&after,w->perspective),
+          relief_balance,relief_guard,combined);
+      }
+    }
 
     if(!w->found || combined>w->best_score){
       w->found=1;
