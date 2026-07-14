@@ -1943,6 +1943,7 @@ static void *root_worker_main(void *arg){
         }
       }
 
+
 if(getenv("SQCHESS_DIAG")!=NULL){
         char diag_uci[8];
         move_to_uci(&w->moves[i],diag_uci);
