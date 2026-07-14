@@ -1944,6 +1944,77 @@ static void *root_worker_main(void *arg){
       }
 
 
+
+      {
+        /*
+          Shield drift guard:
+          a quiet second pawn push on the same wing as our king is a small
+          transformation cost when it is non-forcing. This targets passive
+          shield drift such as h3-h4 after castling, without touching the
+          first luft move h2-h3 or forced/capturing pawn moves.
+        */
+        double shield_drift_guard;
+        char sd_pc;
+        int sd_from_file;
+        int sd_to_file;
+        int sd_from_rank;
+        int sd_to_rank;
+        int sd_king_sq;
+        int sd_king_file;
+        int sd_quiet;
+        int sd_repeated_push;
+        int sd_same_king_wing;
+
+        shield_drift_guard=0.0;
+        sd_pc=w->p->b[w->moves[i].from];
+        sd_from_file=file_of(w->moves[i].from);
+        sd_to_file=file_of(w->moves[i].to);
+        sd_from_rank=rank_of(w->moves[i].from);
+        sd_to_rank=rank_of(w->moves[i].to);
+        sd_king_sq=find_king(w->p,w->perspective);
+        sd_king_file=sd_king_sq>=0 ? file_of(sd_king_sq) : -1;
+
+        sd_quiet=((w->moves[i].flags & FLAG_CAPTURE)==0 &&
+                  (w->moves[i].flags & FLAG_EP)==0 &&
+                  (w->moves[i].flags & FLAG_PROMO)==0);
+
+        sd_repeated_push=0;
+        if(w->perspective==0 && sd_from_rank>1 &&
+           sd_to_rank==sd_from_rank+1 && sd_from_file==sd_to_file){
+          sd_repeated_push=1;
+        }
+        if(w->perspective==1 && sd_from_rank<6 &&
+           sd_to_rank==sd_from_rank-1 && sd_from_file==sd_to_file){
+          sd_repeated_push=1;
+        }
+
+        sd_same_king_wing=0;
+        if(sd_king_file>=5 && sd_from_file>=5) sd_same_king_wing=1;
+        if(sd_king_file<=2 && sd_from_file<=2) sd_same_king_wing=1;
+
+        if(w->p->fullmove<=35 &&
+           lower_piece(sd_pc)=='p' &&
+           sd_quiet &&
+           sd_repeated_push &&
+           sd_same_king_wing &&
+           m.forcing<0.0){
+          shield_drift_guard=0.16;
+          shield_drift_guard+=0.18*(-m.forcing);
+          if(m.risk>0.04) shield_drift_guard+=0.40*(m.risk-0.04);
+          if(m.tactic>0.80) shield_drift_guard+=0.10*(m.tactic-0.80);
+          if(shield_drift_guard>0.45) shield_drift_guard=0.45;
+          combined-=shield_drift_guard;
+        }
+
+        if(getenv("SQCHESS_DIAG")!=NULL && shield_drift_guard>0.0){
+          char sd_uci[8];
+          move_to_uci(&w->moves[i],sd_uci);
+          fprintf(stderr,
+            "DIAG_SHIELD_DRIFT move=%s forcing=%.3f risk=%.3f tactic=%.3f guard=%.3f\n",
+            sd_uci,m.forcing,m.risk,m.tactic,shield_drift_guard);
+        }
+      }
+
 if(getenv("SQCHESS_DIAG")!=NULL){
         char diag_uci[8];
         move_to_uci(&w->moves[i],diag_uci);
