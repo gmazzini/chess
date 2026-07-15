@@ -2255,6 +2255,959 @@ static void *root_worker_main(void *arg){
         }
       }
 
+
+      {
+        /*
+          Pre-castle shield tempo guard:
+          before the king is castled or otherwise displaced from the initial
+          central square, a quiet g/h pawn push is often a pure shield tempo.
+          If it is non-forcing and the relief balance is already negative,
+          apply only a small transformation-state penalty. This targets
+          early h2-h3/h2-h4/g2-g3 style moves without touching later forced
+          king-side resources.
+        */
+        double pcst_guard;
+        char pcst_pc;
+        int pcst_from_file;
+        int pcst_from_rank;
+        int pcst_to_rank;
+        int pcst_king_sq;
+        int pcst_king_file;
+        int pcst_king_rank;
+        int pcst_quiet;
+        int pcst_start_king;
+        int pcst_shield_pawn_push;
+
+        pcst_guard=0.0;
+
+        pcst_pc=w->p->b[w->moves[i].from];
+        pcst_from_file=file_of(w->moves[i].from);
+        pcst_from_rank=rank_of(w->moves[i].from);
+        pcst_to_rank=rank_of(w->moves[i].to);
+        pcst_king_sq=find_king(w->p,w->perspective);
+        pcst_king_file=pcst_king_sq>=0 ? file_of(pcst_king_sq) : -1;
+        pcst_king_rank=pcst_king_sq>=0 ? rank_of(pcst_king_sq) : -1;
+
+        pcst_quiet=((w->moves[i].flags & FLAG_CAPTURE)==0 &&
+                    (w->moves[i].flags & FLAG_EP)==0 &&
+                    (w->moves[i].flags & FLAG_PROMO)==0);
+
+        pcst_start_king=0;
+        if(w->perspective==0 && pcst_king_file==4 && pcst_king_rank==0) pcst_start_king=1;
+        if(w->perspective==1 && pcst_king_file==4 && pcst_king_rank==7) pcst_start_king=1;
+
+        pcst_shield_pawn_push=0;
+        if(w->perspective==0 &&
+           pcst_from_rank==1 &&
+           (pcst_to_rank==2 || pcst_to_rank==3) &&
+           pcst_from_file>=6){
+          pcst_shield_pawn_push=1;
+        }
+        if(w->perspective==1 &&
+           pcst_from_rank==6 &&
+           (pcst_to_rank==5 || pcst_to_rank==4) &&
+           pcst_from_file>=6){
+          pcst_shield_pawn_push=1;
+        }
+
+        if(w->p->fullmove<=12 &&
+           lower_piece(pcst_pc)=='p' &&
+           pcst_quiet &&
+           pcst_start_king &&
+           pcst_shield_pawn_push &&
+           m.forcing<0.20 &&
+           relief_balance< -0.55){
+          pcst_guard=0.045;
+          pcst_guard+=0.045*(-0.55-relief_balance);
+          if(m.forcing<0.0) pcst_guard+=0.020*(-m.forcing);
+          if(m.tactic>0.80) pcst_guard+=0.015*(m.tactic-0.80);
+          if(pcst_guard>0.130) pcst_guard=0.130;
+          combined-=pcst_guard;
+        }
+
+        if(getenv("SQCHESS_DIAG")!=NULL && pcst_guard>0.0){
+          char pcst_uci[8];
+          move_to_uci(&w->moves[i],pcst_uci);
+          fprintf(stderr,
+            "DIAG_PRECASTLE_SHIELD_TEMPO move=%s forcing=%.3f tactic=%.3f relief_balance=%.3f guard=%.3f\n",
+            pcst_uci,m.forcing,m.tactic,relief_balance,pcst_guard);
+        }
+      }
+
+
+      {
+        /*
+          Pre-castle long bishop sortie guard:
+          before the king is castled, a quiet bishop move that jumps two or
+          more files toward the wing is often a pin/pressure mirage if the
+          centre is still fluid. This is intentionally small and only acts as
+          a tie-breaker, e.g. e3-g5 over e3-f4.
+        */
+        double plbs_guard;
+        char plbs_pc;
+        int plbs_from_file;
+        int plbs_to_file;
+        int plbs_from_rank;
+        int plbs_to_rank;
+        int plbs_king_sq;
+        int plbs_king_file;
+        int plbs_king_rank;
+        int plbs_quiet;
+        int plbs_start_king;
+        int plbs_long_sortie;
+        int plbs_forward;
+
+        plbs_guard=0.0;
+
+        plbs_pc=w->p->b[w->moves[i].from];
+        plbs_from_file=file_of(w->moves[i].from);
+        plbs_to_file=file_of(w->moves[i].to);
+        plbs_from_rank=rank_of(w->moves[i].from);
+        plbs_to_rank=rank_of(w->moves[i].to);
+        plbs_king_sq=find_king(w->p,w->perspective);
+        plbs_king_file=plbs_king_sq>=0 ? file_of(plbs_king_sq) : -1;
+        plbs_king_rank=plbs_king_sq>=0 ? rank_of(plbs_king_sq) : -1;
+
+        plbs_quiet=((w->moves[i].flags & FLAG_CAPTURE)==0 &&
+                    (w->moves[i].flags & FLAG_EP)==0 &&
+                    (w->moves[i].flags & FLAG_PROMO)==0);
+
+        plbs_start_king=0;
+        if(w->perspective==0 && plbs_king_file==4 && plbs_king_rank==0) plbs_start_king=1;
+        if(w->perspective==1 && plbs_king_file==4 && plbs_king_rank==7) plbs_start_king=1;
+
+        plbs_forward=0;
+        if(w->perspective==0 && plbs_to_rank>plbs_from_rank) plbs_forward=1;
+        if(w->perspective==1 && plbs_to_rank<plbs_from_rank) plbs_forward=1;
+
+        plbs_long_sortie=0;
+        if(abs(plbs_to_file-plbs_from_file)>=2) plbs_long_sortie=1;
+
+        if(w->p->fullmove<=12 &&
+           lower_piece(plbs_pc)=='b' &&
+           plbs_quiet &&
+           plbs_start_king &&
+           plbs_forward &&
+           plbs_long_sortie &&
+           m.forcing<0.60){
+          plbs_guard=0.040;
+          if(m.forcing<0.0) plbs_guard+=0.015*(-m.forcing);
+          if(m.tactic>0.80) plbs_guard+=0.010*(m.tactic-0.80);
+          if(m.risk>0.04) plbs_guard+=0.100*(m.risk-0.04);
+          if(plbs_guard>0.090) plbs_guard=0.090;
+          combined-=plbs_guard;
+        }
+
+        if(getenv("SQCHESS_DIAG")!=NULL && plbs_guard>0.0){
+          char plbs_uci[8];
+          move_to_uci(&w->moves[i],plbs_uci);
+          fprintf(stderr,
+            "DIAG_PRECASTLE_LONG_BISHOP_SORTIE move=%s forcing=%.3f risk=%.3f tactic=%.3f guard=%.3f\n",
+            plbs_uci,m.forcing,m.risk,m.tactic,plbs_guard);
+        }
+      }
+
+
+      {
+        /*
+          Pre-castle e-pawn blocker guard:
+          before castling, moving the queen bishop onto the own e-pawn file
+          while the e-pawn is still on its starting square can block the
+          natural development path of the king bishop and delay castling.
+          This is a small structural tie-breaker, aimed at c1-e3 over e2-e3.
+        */
+        double peb_guard;
+        char peb_pc;
+        int peb_to_file;
+        int peb_to_rank;
+        int peb_king_sq;
+        int peb_king_file;
+        int peb_king_rank;
+        int peb_quiet;
+        int peb_start_king;
+        int peb_blocks_epawn;
+        int peb_epawn_sq;
+        int peb_kbishop_sq;
+
+        peb_guard=0.0;
+
+        peb_pc=w->p->b[w->moves[i].from];
+        peb_to_file=file_of(w->moves[i].to);
+        peb_to_rank=rank_of(w->moves[i].to);
+        peb_king_sq=find_king(w->p,w->perspective);
+        peb_king_file=peb_king_sq>=0 ? file_of(peb_king_sq) : -1;
+        peb_king_rank=peb_king_sq>=0 ? rank_of(peb_king_sq) : -1;
+
+        peb_quiet=((w->moves[i].flags & FLAG_CAPTURE)==0 &&
+                   (w->moves[i].flags & FLAG_EP)==0 &&
+                   (w->moves[i].flags & FLAG_PROMO)==0);
+
+        peb_start_king=0;
+        if(w->perspective==0 && peb_king_file==4 && peb_king_rank==0) peb_start_king=1;
+        if(w->perspective==1 && peb_king_file==4 && peb_king_rank==7) peb_start_king=1;
+
+        peb_epawn_sq=-1;
+        peb_kbishop_sq=-1;
+        if(w->perspective==0){
+          peb_epawn_sq=1*8+4;
+          peb_kbishop_sq=0*8+5;
+        } else {
+          peb_epawn_sq=6*8+4;
+          peb_kbishop_sq=7*8+5;
+        }
+
+        peb_blocks_epawn=0;
+        if(peb_to_file==4 &&
+           peb_to_rank!=rank_of(peb_epawn_sq) &&
+           w->p->b[peb_epawn_sq]!='.' &&
+           lower_piece(w->p->b[peb_epawn_sq])=='p' &&
+           w->p->b[peb_kbishop_sq]!='.' &&
+           lower_piece(w->p->b[peb_kbishop_sq])=='b'){
+          peb_blocks_epawn=1;
+        }
+
+        if(w->p->fullmove<=12 &&
+           lower_piece(peb_pc)=='b' &&
+           peb_quiet &&
+           peb_start_king &&
+           peb_blocks_epawn &&
+           m.forcing<0.60){
+          peb_guard=0.385;
+          if(relief_balance<0.0) peb_guard+=0.015*(-relief_balance);
+          if(m.forcing<0.0) peb_guard+=0.010*(-m.forcing);
+          if(peb_guard>0.430) peb_guard=0.430;
+          combined-=peb_guard;
+        }
+
+        if(getenv("SQCHESS_DIAG")!=NULL && peb_guard>0.0){
+          char peb_uci[8];
+          move_to_uci(&w->moves[i],peb_uci);
+          fprintf(stderr,
+            "DIAG_PRECASTLE_EPAWN_BLOCKER move=%s forcing=%.3f relief_balance=%.3f guard=%.3f\n",
+            peb_uci,m.forcing,relief_balance,peb_guard);
+        }
+      }
+
+
+      {
+        /*
+          Knight rebound gate:
+          a flank pawn push may look active because it attacks an enemy knight,
+          but if that knight has an edge rebound square from which it attacks
+          one of our minor pieces, the pawn push is often a transfer mirage.
+          Example: b2-b4 attacks Nc5, but allows Nc5-a4-c3.
+        */
+        double krg_guard;
+        char krg_pc;
+        char krg_tpc;
+        char krg_lpc;
+        char krg_apc;
+        int krg_quiet;
+        int krg_dir;
+        int krg_from_file;
+        int krg_to_file;
+        int krg_from_rank;
+        int krg_to_rank;
+        int krg_two_step_flank;
+        int krg_attack_file[2];
+        int krg_attack_rank;
+        int krg_attack_sq;
+        int krg_target_idx;
+        int krg_enemy_knight;
+        int krg_j;
+        int krg_k;
+        int krg_lf;
+        int krg_lr;
+        int krg_land;
+        int krg_af;
+        int krg_ar;
+        int krg_asq;
+        int krg_own_minor;
+        int krg_pattern;
+        int krg_knight_dx[8];
+        int krg_knight_dy[8];
+
+        krg_knight_dx[0]=1;  krg_knight_dy[0]=2;
+        krg_knight_dx[1]=2;  krg_knight_dy[1]=1;
+        krg_knight_dx[2]=2;  krg_knight_dy[2]=-1;
+        krg_knight_dx[3]=1;  krg_knight_dy[3]=-2;
+        krg_knight_dx[4]=-1; krg_knight_dy[4]=-2;
+        krg_knight_dx[5]=-2; krg_knight_dy[5]=-1;
+        krg_knight_dx[6]=-2; krg_knight_dy[6]=1;
+        krg_knight_dx[7]=-1; krg_knight_dy[7]=2;
+
+        krg_guard=0.0;
+        krg_pattern=0;
+
+        krg_pc=w->p->b[w->moves[i].from];
+        krg_from_file=file_of(w->moves[i].from);
+        krg_to_file=file_of(w->moves[i].to);
+        krg_from_rank=rank_of(w->moves[i].from);
+        krg_to_rank=rank_of(w->moves[i].to);
+
+        krg_quiet=((w->moves[i].flags & FLAG_CAPTURE)==0 &&
+                   (w->moves[i].flags & FLAG_EP)==0 &&
+                   (w->moves[i].flags & FLAG_PROMO)==0);
+
+        krg_dir=(w->perspective==0) ? 1 : -1;
+
+        krg_two_step_flank=0;
+        if(lower_piece(krg_pc)=='p' &&
+           krg_quiet &&
+           krg_from_file==krg_to_file &&
+           (krg_from_file==1 || krg_from_file==6) &&
+           (krg_to_rank-krg_from_rank)==2*krg_dir){
+          krg_two_step_flank=1;
+        }
+
+        if(krg_two_step_flank){
+          krg_attack_file[0]=krg_to_file-1;
+          krg_attack_file[1]=krg_to_file+1;
+          krg_attack_rank=krg_to_rank+krg_dir;
+
+          for(krg_target_idx=0;krg_target_idx<2;krg_target_idx++){
+            if(krg_attack_file[krg_target_idx]<0 || krg_attack_file[krg_target_idx]>7) continue;
+            if(krg_attack_rank<0 || krg_attack_rank>7) continue;
+
+            krg_attack_sq=krg_attack_rank*8+krg_attack_file[krg_target_idx];
+            krg_tpc=w->p->b[krg_attack_sq];
+
+            krg_enemy_knight=0;
+            if(lower_piece(krg_tpc)=='n'){
+              if(w->perspective==0 && krg_tpc>='a' && krg_tpc<='z') krg_enemy_knight=1;
+              if(w->perspective==1 && krg_tpc>='A' && krg_tpc<='Z') krg_enemy_knight=1;
+            }
+
+            if(!krg_enemy_knight) continue;
+
+            for(krg_j=0;krg_j<8;krg_j++){
+              krg_lf=file_of(krg_attack_sq)+krg_knight_dx[krg_j];
+              krg_lr=rank_of(krg_attack_sq)+krg_knight_dy[krg_j];
+              if(krg_lf<0 || krg_lf>7 || krg_lr<0 || krg_lr>7) continue;
+
+              krg_land=krg_lr*8+krg_lf;
+              krg_lpc=w->p->b[krg_land];
+
+              if(krg_lpc!='.') continue;
+
+              /*
+                Edge rebound: this catches Nc5-a4 / Nc4-a5 style escapes.
+                It is intentionally narrower than a generic pawn-kick penalty.
+              */
+              if(!(krg_lf==0 || krg_lf==7)) continue;
+
+              for(krg_k=0;krg_k<8;krg_k++){
+                krg_af=krg_lf+krg_knight_dx[krg_k];
+                krg_ar=krg_lr+krg_knight_dy[krg_k];
+                if(krg_af<0 || krg_af>7 || krg_ar<0 || krg_ar>7) continue;
+
+                krg_asq=krg_ar*8+krg_af;
+                krg_apc=w->p->b[krg_asq];
+
+                krg_own_minor=0;
+                if(lower_piece(krg_apc)=='n' || lower_piece(krg_apc)=='b'){
+                  if(w->perspective==0 && krg_apc>='A' && krg_apc<='Z') krg_own_minor=1;
+                  if(w->perspective==1 && krg_apc>='a' && krg_apc<='z') krg_own_minor=1;
+                }
+
+                if(krg_own_minor){
+                  krg_pattern=1;
+                }
+              }
+            }
+          }
+        }
+
+        if(krg_pattern && m.forcing<0.60){
+          krg_guard=0.300;
+          if(m.forcing<0.0) krg_guard+=0.050*(-m.forcing);
+          if(krg_guard>0.380) krg_guard=0.380;
+          combined-=krg_guard;
+        }
+
+        if(getenv("SQCHESS_DIAG")!=NULL && krg_guard>0.0){
+          char krg_uci[8];
+          move_to_uci(&w->moves[i],krg_uci);
+          fprintf(stderr,
+            "DIAG_KNIGHT_REBOUND_GATE move=%s forcing=%.3f guard=%.3f\n",
+            krg_uci,m.forcing,krg_guard);
+        }
+      }
+
+
+      {
+        /*
+          Pre-castle center-release guard:
+          before castling, a central pawn capture that releases central tension
+          can be a search mirage when the immediate move quality is negative.
+          Example: after Bb5+ style pressure, d4xc5 looks active but delays
+          castling and leaves the bishop/king coordination unstable.
+        */
+        double pcr_guard;
+        char pcr_pc;
+        int pcr_from_file;
+        int pcr_to_file;
+        int pcr_king_sq;
+        int pcr_king_file;
+        int pcr_king_rank;
+        int pcr_start_king;
+        int pcr_center_pawn_capture;
+        int pcr_capture;
+
+        pcr_guard=0.0;
+
+        pcr_pc=w->p->b[w->moves[i].from];
+        pcr_from_file=file_of(w->moves[i].from);
+        pcr_to_file=file_of(w->moves[i].to);
+
+        pcr_capture=((w->moves[i].flags & FLAG_CAPTURE)!=0 ||
+                     (w->moves[i].flags & FLAG_EP)!=0);
+
+        pcr_king_sq=find_king(w->p,w->perspective);
+        pcr_king_file=pcr_king_sq>=0 ? file_of(pcr_king_sq) : -1;
+        pcr_king_rank=pcr_king_sq>=0 ? rank_of(pcr_king_sq) : -1;
+
+        pcr_start_king=0;
+        if(w->perspective==0 && pcr_king_file==4 && pcr_king_rank==0) pcr_start_king=1;
+        if(w->perspective==1 && pcr_king_file==4 && pcr_king_rank==7) pcr_start_king=1;
+
+        pcr_center_pawn_capture=0;
+        if(lower_piece(pcr_pc)=='p' &&
+           pcr_capture &&
+           (pcr_from_file==3 || pcr_from_file==4) &&
+           pcr_to_file!=pcr_from_file){
+          pcr_center_pawn_capture=1;
+        }
+
+        if(w->p->fullmove<=14 &&
+           pcr_start_king &&
+           pcr_center_pawn_capture &&
+           m.forcing<0.75 &&
+           (m.score)<0.0){
+          pcr_guard=0.430;
+          pcr_guard+=0.080*(-(m.score));
+          if(relief_balance<0.0) pcr_guard+=0.060*(-relief_balance);
+          if(m.forcing<0.0) pcr_guard+=0.030*(-m.forcing);
+          if(pcr_guard>0.620) pcr_guard=0.620;
+          combined-=pcr_guard;
+        }
+
+        if(getenv("SQCHESS_DIAG")!=NULL && pcr_guard>0.0){
+          char pcr_uci[8];
+          move_to_uci(&w->moves[i],pcr_uci);
+          fprintf(stderr,
+            "DIAG_PRECASTLE_CENTER_RELEASE move=%s forcing=%.3f imm=%.3f relief_balance=%.3f guard=%.3f\n",
+            pcr_uci,m.forcing,(m.score),relief_balance,pcr_guard);
+        }
+      }
+
+
+      {
+        /*
+          King-wing knight pawn bait:
+          after short castling, a knight capture of the enemy g-pawn can be
+          a tactical bait when the immediate score is strongly negative.
+          Example: Nf3xg5 after ...g5, followed by ...Rg8 and queen pressure.
+          This is deliberately narrow: own king short-castled, own f-knight
+          captures an enemy g-pawn two ranks forward.
+        */
+        double kwk_guard;
+        char kwk_pc;
+        char kwk_tpc;
+        int kwk_from_file;
+        int kwk_to_file;
+        int kwk_from_rank;
+        int kwk_to_rank;
+        int kwk_king_sq;
+        int kwk_king_file;
+        int kwk_king_rank;
+        int kwk_dir;
+        int kwk_own_knight;
+        int kwk_enemy_pawn;
+        int kwk_short_castled;
+        int kwk_pattern;
+        int kwk_hrook_sq;
+        int kwk_enemy_hrook;
+
+        kwk_guard=0.0;
+        kwk_pattern=0;
+
+        kwk_pc=w->p->b[w->moves[i].from];
+        kwk_tpc=w->p->b[w->moves[i].to];
+
+        kwk_from_file=file_of(w->moves[i].from);
+        kwk_to_file=file_of(w->moves[i].to);
+        kwk_from_rank=rank_of(w->moves[i].from);
+        kwk_to_rank=rank_of(w->moves[i].to);
+
+        kwk_dir=(w->perspective==0) ? 1 : -1;
+
+        kwk_king_sq=find_king(w->p,w->perspective);
+        kwk_king_file=kwk_king_sq>=0 ? file_of(kwk_king_sq) : -1;
+        kwk_king_rank=kwk_king_sq>=0 ? rank_of(kwk_king_sq) : -1;
+
+        kwk_short_castled=0;
+        if(w->perspective==0 && kwk_king_file==6 && kwk_king_rank==0) kwk_short_castled=1;
+        if(w->perspective==1 && kwk_king_file==6 && kwk_king_rank==7) kwk_short_castled=1;
+
+        kwk_own_knight=0;
+        if(lower_piece(kwk_pc)=='n'){
+          if(w->perspective==0 && kwk_pc>='A' && kwk_pc<='Z') kwk_own_knight=1;
+          if(w->perspective==1 && kwk_pc>='a' && kwk_pc<='z') kwk_own_knight=1;
+        }
+
+        kwk_enemy_pawn=0;
+        if(lower_piece(kwk_tpc)=='p'){
+          if(w->perspective==0 && kwk_tpc>='a' && kwk_tpc<='z') kwk_enemy_pawn=1;
+          if(w->perspective==1 && kwk_tpc>='A' && kwk_tpc<='Z') kwk_enemy_pawn=1;
+        }
+
+        kwk_hrook_sq=(w->perspective==0) ? (7*8+7) : 7;
+        kwk_enemy_hrook=0;
+        if(kwk_hrook_sq>=0 && kwk_hrook_sq<64){
+          char kwk_rpc;
+          kwk_rpc=w->p->b[kwk_hrook_sq];
+          if(lower_piece(kwk_rpc)=='r'){
+            if(w->perspective==0 && kwk_rpc>='a' && kwk_rpc<='z') kwk_enemy_hrook=1;
+            if(w->perspective==1 && kwk_rpc>='A' && kwk_rpc<='Z') kwk_enemy_hrook=1;
+          }
+        }
+
+        if(kwk_short_castled &&
+           kwk_own_knight &&
+           kwk_enemy_pawn &&
+           kwk_from_file==5 &&
+           kwk_to_file==6 &&
+           (kwk_to_rank-kwk_from_rank)==2*kwk_dir){
+          kwk_pattern=1;
+        }
+
+        if(kwk_pattern &&
+           (m.score)< -2.0 &&
+           m.forcing<0.80){
+          kwk_guard=0.090;
+          kwk_guard+=0.015*(-((m.score)+2.0));
+          if(kwk_enemy_hrook) kwk_guard+=0.030;
+          if(m.forcing<0.0) kwk_guard+=0.020*(-m.forcing);
+          if(kwk_guard>0.190) kwk_guard=0.190;
+          combined-=kwk_guard;
+        }
+
+        if(getenv("SQCHESS_DIAG")!=NULL && kwk_guard>0.0){
+          char kwk_uci[8];
+          move_to_uci(&w->moves[i],kwk_uci);
+          fprintf(stderr,
+            "DIAG_KING_WING_KNIGHT_PAWN_BAIT move=%s forcing=%.3f imm=%.3f guard=%.3f\n",
+            kwk_uci,m.forcing,(m.score),kwk_guard);
+        }
+      }
+
+
+      {
+        /*
+          Castled center-release transfer mirage:
+          after short castling, a central pawn capture may release central
+          tension while looking active only because the transfer term is high.
+          If immediate quality is poor and transfer is doing most of the rescue,
+          apply a narrow correction. Example: d4xc5 after castling and ...Bd6.
+        */
+        double ccr_guard;
+        char ccr_pc;
+        int ccr_from_file;
+        int ccr_to_file;
+        int ccr_king_sq;
+        int ccr_king_file;
+        int ccr_king_rank;
+        int ccr_short_castled;
+        int ccr_capture;
+        int ccr_center_pawn_capture;
+
+        ccr_guard=0.0;
+
+        ccr_pc=w->p->b[w->moves[i].from];
+        ccr_from_file=file_of(w->moves[i].from);
+        ccr_to_file=file_of(w->moves[i].to);
+
+        ccr_capture=((w->moves[i].flags & FLAG_CAPTURE)!=0 ||
+                     (w->moves[i].flags & FLAG_EP)!=0);
+
+        ccr_king_sq=find_king(w->p,w->perspective);
+        ccr_king_file=ccr_king_sq>=0 ? file_of(ccr_king_sq) : -1;
+        ccr_king_rank=ccr_king_sq>=0 ? rank_of(ccr_king_sq) : -1;
+
+        ccr_short_castled=0;
+        if(w->perspective==0 && ccr_king_file==6 && ccr_king_rank==0) ccr_short_castled=1;
+        if(w->perspective==1 && ccr_king_file==6 && ccr_king_rank==7) ccr_short_castled=1;
+
+        ccr_center_pawn_capture=0;
+        if(lower_piece(ccr_pc)=='p' &&
+           ccr_capture &&
+           (ccr_from_file==3 || ccr_from_file==4) &&
+           ccr_to_file!=ccr_from_file){
+          ccr_center_pawn_capture=1;
+        }
+
+        if(ccr_short_castled &&
+           ccr_center_pawn_capture &&
+           (m.score)< -1.50 &&
+           (state_transfer(&after,w->perspective))>0.50 &&
+           relief_balance<=0.05 &&
+           m.forcing<0.80){
+          ccr_guard=0.390;
+          ccr_guard+=0.080*((state_transfer(&after,w->perspective))-0.50);
+          ccr_guard+=0.020*(-((m.score)+1.50));
+          if(relief_balance<0.0) ccr_guard+=0.050*(-relief_balance);
+          if(m.forcing<0.0) ccr_guard+=0.020*(-m.forcing);
+          if(ccr_guard>0.560) ccr_guard=0.560;
+          combined-=ccr_guard;
+        }
+
+        if(getenv("SQCHESS_DIAG")!=NULL && ccr_guard>0.0){
+          char ccr_uci[8];
+          move_to_uci(&w->moves[i],ccr_uci);
+          fprintf(stderr,
+            "DIAG_CASTLED_CENTER_RELEASE_TRANSFER_MIRAGE move=%s forcing=%.3f imm=%.3f transfer=%.3f relief_balance=%.3f guard=%.3f\n",
+            ccr_uci,m.forcing,(m.score),(state_transfer(&after,w->perspective)),relief_balance,ccr_guard);
+        }
+      }
+
+
+      {
+        /*
+          Bishop re-entry mirage:
+          after the bishop has retreated to a central square, moving it back
+          to an advanced pin/sortie square may look very active at depth 4,
+          but it often only invites ...Bd7 and a forced trade after wasted tempi.
+          This is intentionally narrow: short-castled king, quiet bishop move,
+          from a central retreat square to an advanced b/g-file sortie square.
+        */
+        double brm_guard;
+        char brm_pc;
+        int brm_from_file;
+        int brm_from_rank;
+        int brm_to_file;
+        int brm_to_rank;
+        int brm_king_sq;
+        int brm_king_file;
+        int brm_king_rank;
+        int brm_short_castled;
+        int brm_capture;
+        int brm_forward_two;
+        int brm_from_central_retreat;
+        int brm_to_advanced_sortie;
+        int brm_enemy_bishop_nearby;
+
+        brm_guard=0.0;
+
+        brm_pc=w->p->b[w->moves[i].from];
+        brm_from_file=file_of(w->moves[i].from);
+        brm_from_rank=rank_of(w->moves[i].from);
+        brm_to_file=file_of(w->moves[i].to);
+        brm_to_rank=rank_of(w->moves[i].to);
+
+        brm_capture=((w->moves[i].flags & FLAG_CAPTURE)!=0 ||
+                     (w->moves[i].flags & FLAG_EP)!=0);
+
+        brm_king_sq=find_king(w->p,w->perspective);
+        brm_king_file=brm_king_sq>=0 ? file_of(brm_king_sq) : -1;
+        brm_king_rank=brm_king_sq>=0 ? rank_of(brm_king_sq) : -1;
+
+        brm_short_castled=0;
+        if(w->perspective==0 && brm_king_file==6 && brm_king_rank==0) brm_short_castled=1;
+        if(w->perspective==1 && brm_king_file==6 && brm_king_rank==7) brm_short_castled=1;
+
+        brm_forward_two=0;
+        if(w->perspective==0 && brm_to_rank>=brm_from_rank+2) brm_forward_two=1;
+        if(w->perspective==1 && brm_to_rank<=brm_from_rank-2) brm_forward_two=1;
+
+        brm_from_central_retreat=0;
+        if((brm_from_file==3 || brm_from_file==4) &&
+           ((w->perspective==0 && brm_from_rank==2) ||
+            (w->perspective==1 && brm_from_rank==5))){
+          brm_from_central_retreat=1;
+        }
+
+        brm_to_advanced_sortie=0;
+        if((brm_to_file==1 || brm_to_file==6) &&
+           ((w->perspective==0 && brm_to_rank>=4) ||
+            (w->perspective==1 && brm_to_rank<=3))){
+          brm_to_advanced_sortie=1;
+        }
+
+        brm_enemy_bishop_nearby=0;
+        {
+          int sq1;
+          int sq2;
+          sq1=-1;
+          sq2=-1;
+          if(w->perspective==0){
+            if(brm_to_rank>0) sq1=((brm_to_rank-1)*8+brm_to_file);
+            if(brm_to_rank>1) sq2=((brm_to_rank-2)*8+brm_to_file);
+          } else {
+            if(brm_to_rank<7) sq1=((brm_to_rank+1)*8+brm_to_file);
+            if(brm_to_rank<6) sq2=((brm_to_rank+2)*8+brm_to_file);
+          }
+          if(sq1>=0 && lower_piece(w->p->b[sq1])=='b' &&
+             ((w->perspective==0 && w->p->b[sq1]>='a' && w->p->b[sq1]<='z') ||
+              (w->perspective==1 && w->p->b[sq1]>='A' && w->p->b[sq1]<='Z'))) brm_enemy_bishop_nearby=1;
+          if(sq2>=0 && lower_piece(w->p->b[sq2])=='b' &&
+             ((w->perspective==0 && w->p->b[sq2]>='a' && w->p->b[sq2]<='z') ||
+              (w->perspective==1 && w->p->b[sq2]>='A' && w->p->b[sq2]<='Z'))) brm_enemy_bishop_nearby=1;
+        }
+
+        if(lower_piece(brm_pc)=='b' &&
+           !brm_capture &&
+           brm_short_castled &&
+           brm_forward_two &&
+           brm_from_central_retreat &&
+           brm_to_advanced_sortie){
+          brm_guard=2.550;
+          if(brm_enemy_bishop_nearby) brm_guard+=0.350;
+          if(m.forcing<0.0) brm_guard+=0.100*(-m.forcing);
+          if(m.tactic>0.80) brm_guard+=0.080*(m.tactic-0.80);
+          if(brm_guard>3.100) brm_guard=3.100;
+          combined-=brm_guard;
+        }
+
+        if(getenv("SQCHESS_DIAG")!=NULL && brm_guard>0.0){
+          char brm_uci[8];
+          move_to_uci(&w->moves[i],brm_uci);
+          fprintf(stderr,
+            "DIAG_BISHOP_REENTRY_MIRAGE move=%s forcing=%.3f tactic=%.3f enemy_bishop_nearby=%d guard=%.3f\n",
+            brm_uci,m.forcing,m.tactic,brm_enemy_bishop_nearby,brm_guard);
+        }
+      }
+
+
+      {
+        /*
+          Castled center-pawn push transfer mirage:
+          after short castling, a central one-step pawn thrust into a square
+          attacked by an enemy pawn can look playable only because transfer is
+          very high. If immediate quality and relief are poor, discount it.
+          Example: e3-e4 after ...Bg4-f5, where ...dxe4 is immediate.
+        */
+        double cpp_guard;
+        char cpp_pc;
+        int cpp_from_file;
+        int cpp_from_rank;
+        int cpp_to_file;
+        int cpp_to_rank;
+        int cpp_king_sq;
+        int cpp_king_file;
+        int cpp_king_rank;
+        int cpp_short_castled;
+        int cpp_capture;
+        int cpp_forward_one;
+        int cpp_center_pawn_push;
+        int cpp_att_sq1;
+        int cpp_att_sq2;
+        int cpp_enemy_pawn_attack;
+        char cpp_att1;
+        char cpp_att2;
+
+        cpp_guard=0.0;
+
+        cpp_pc=w->p->b[w->moves[i].from];
+        cpp_from_file=file_of(w->moves[i].from);
+        cpp_from_rank=rank_of(w->moves[i].from);
+        cpp_to_file=file_of(w->moves[i].to);
+        cpp_to_rank=rank_of(w->moves[i].to);
+
+        cpp_capture=((w->moves[i].flags & FLAG_CAPTURE)!=0 ||
+                     (w->moves[i].flags & FLAG_EP)!=0);
+
+        cpp_king_sq=find_king(w->p,w->perspective);
+        cpp_king_file=cpp_king_sq>=0 ? file_of(cpp_king_sq) : -1;
+        cpp_king_rank=cpp_king_sq>=0 ? rank_of(cpp_king_sq) : -1;
+
+        cpp_short_castled=0;
+        if(w->perspective==0 && cpp_king_file==6 && cpp_king_rank==0) cpp_short_castled=1;
+        if(w->perspective==1 && cpp_king_file==6 && cpp_king_rank==7) cpp_short_castled=1;
+
+        cpp_forward_one=0;
+        if(w->perspective==0 && cpp_to_rank==cpp_from_rank+1) cpp_forward_one=1;
+        if(w->perspective==1 && cpp_to_rank==cpp_from_rank-1) cpp_forward_one=1;
+
+        cpp_center_pawn_push=0;
+        if(lower_piece(cpp_pc)=='p' &&
+           !cpp_capture &&
+           cpp_from_file==cpp_to_file &&
+           (cpp_from_file==3 || cpp_from_file==4) &&
+           cpp_forward_one){
+          cpp_center_pawn_push=1;
+        }
+
+        cpp_att_sq1=-1;
+        cpp_att_sq2=-1;
+        cpp_enemy_pawn_attack=0;
+        cpp_att1='.';
+        cpp_att2='.';
+
+        if(w->perspective==0){
+          if(cpp_to_rank<7 && cpp_to_file>0) cpp_att_sq1=(cpp_to_rank+1)*8+(cpp_to_file-1);
+          if(cpp_to_rank<7 && cpp_to_file<7) cpp_att_sq2=(cpp_to_rank+1)*8+(cpp_to_file+1);
+        } else {
+          if(cpp_to_rank>0 && cpp_to_file>0) cpp_att_sq1=(cpp_to_rank-1)*8+(cpp_to_file-1);
+          if(cpp_to_rank>0 && cpp_to_file<7) cpp_att_sq2=(cpp_to_rank-1)*8+(cpp_to_file+1);
+        }
+
+        if(cpp_att_sq1>=0) cpp_att1=w->p->b[cpp_att_sq1];
+        if(cpp_att_sq2>=0) cpp_att2=w->p->b[cpp_att_sq2];
+
+        if(lower_piece(cpp_att1)=='p' &&
+           ((w->perspective==0 && cpp_att1>='a' && cpp_att1<='z') ||
+            (w->perspective==1 && cpp_att1>='A' && cpp_att1<='Z'))){
+          cpp_enemy_pawn_attack=1;
+        }
+
+        if(lower_piece(cpp_att2)=='p' &&
+           ((w->perspective==0 && cpp_att2>='a' && cpp_att2<='z') ||
+            (w->perspective==1 && cpp_att2>='A' && cpp_att2<='Z'))){
+          cpp_enemy_pawn_attack=1;
+        }
+
+        if(cpp_short_castled &&
+           cpp_center_pawn_push &&
+           cpp_enemy_pawn_attack &&
+           (m.score)< -1.00 &&
+           (state_transfer(&after,w->perspective))>0.55 &&
+           relief_balance<=0.05){
+          cpp_guard=1.390;
+          cpp_guard+=0.220*((state_transfer(&after,w->perspective))-0.55);
+          cpp_guard+=0.080*(-1.00-(m.score));
+          if(relief_balance<0.0) cpp_guard+=0.180*(-relief_balance);
+          if(m.forcing<0.0) cpp_guard+=0.050*(-m.forcing);
+          if(cpp_guard>1.850) cpp_guard=1.850;
+          combined-=cpp_guard;
+        }
+
+        if(getenv("SQCHESS_DIAG")!=NULL && cpp_guard>0.0){
+          char cpp_uci[8];
+          move_to_uci(&w->moves[i],cpp_uci);
+          fprintf(stderr,
+            "DIAG_CASTLED_CENTER_PAWN_PUSH_TRANSFER_MIRAGE move=%s forcing=%.3f imm=%.3f transfer=%.3f relief_balance=%.3f enemy_pawn_attack=%d guard=%.3f\n",
+            cpp_uci,m.forcing,(m.score),(state_transfer(&after,w->perspective)),relief_balance,cpp_enemy_pawn_attack,cpp_guard);
+        }
+      }
+
+
+      {
+        /*
+          Castled king-wing bishop-chase mirage:
+          after short castling, a two-square g-pawn lunge may look active
+          because it attacks an enemy bishop, but it opens the king shield.
+          This is intentionally narrow: g-pawn two-step, quiet move,
+          short-castled king, enemy bishop attacked by the pawn after the move,
+          and very poor immediate score.
+          Example: g2-g4 attacking ...Bf5 after h3.
+        */
+        double kwb_guard;
+        char kwb_pc;
+        int kwb_from_file;
+        int kwb_from_rank;
+        int kwb_to_file;
+        int kwb_to_rank;
+        int kwb_king_sq;
+        int kwb_king_file;
+        int kwb_king_rank;
+        int kwb_short_castled;
+        int kwb_capture;
+        int kwb_g_pawn_two_step;
+        int kwb_att_sq1;
+        int kwb_att_sq2;
+        char kwb_att1;
+        char kwb_att2;
+        int kwb_attacks_enemy_bishop;
+
+        kwb_guard=0.0;
+
+        kwb_pc=w->p->b[w->moves[i].from];
+        kwb_from_file=file_of(w->moves[i].from);
+        kwb_from_rank=rank_of(w->moves[i].from);
+        kwb_to_file=file_of(w->moves[i].to);
+        kwb_to_rank=rank_of(w->moves[i].to);
+
+        kwb_capture=((w->moves[i].flags & FLAG_CAPTURE)!=0 ||
+                     (w->moves[i].flags & FLAG_EP)!=0);
+
+        kwb_king_sq=find_king(w->p,w->perspective);
+        kwb_king_file=kwb_king_sq>=0 ? file_of(kwb_king_sq) : -1;
+        kwb_king_rank=kwb_king_sq>=0 ? rank_of(kwb_king_sq) : -1;
+
+        kwb_short_castled=0;
+        if(w->perspective==0 && kwb_king_file==6 && kwb_king_rank==0) kwb_short_castled=1;
+        if(w->perspective==1 && kwb_king_file==6 && kwb_king_rank==7) kwb_short_castled=1;
+
+        kwb_g_pawn_two_step=0;
+        if(lower_piece(kwb_pc)=='p' &&
+           !kwb_capture &&
+           kwb_from_file==6 &&
+           kwb_to_file==6 &&
+           w->perspective==0 &&
+           kwb_from_rank==1 &&
+           kwb_to_rank==3){
+          kwb_g_pawn_two_step=1;
+        }
+        if(lower_piece(kwb_pc)=='p' &&
+           !kwb_capture &&
+           kwb_from_file==6 &&
+           kwb_to_file==6 &&
+           w->perspective==1 &&
+           kwb_from_rank==6 &&
+           kwb_to_rank==4){
+          kwb_g_pawn_two_step=1;
+        }
+
+        kwb_att_sq1=-1;
+        kwb_att_sq2=-1;
+        kwb_att1='.';
+        kwb_att2='.';
+        kwb_attacks_enemy_bishop=0;
+
+        if(w->perspective==0){
+          if(kwb_to_rank<7 && kwb_to_file>0) kwb_att_sq1=(kwb_to_rank+1)*8+(kwb_to_file-1);
+          if(kwb_to_rank<7 && kwb_to_file<7) kwb_att_sq2=(kwb_to_rank+1)*8+(kwb_to_file+1);
+        } else {
+          if(kwb_to_rank>0 && kwb_to_file>0) kwb_att_sq1=(kwb_to_rank-1)*8+(kwb_to_file-1);
+          if(kwb_to_rank>0 && kwb_to_file<7) kwb_att_sq2=(kwb_to_rank-1)*8+(kwb_to_file+1);
+        }
+
+        if(kwb_att_sq1>=0) kwb_att1=w->p->b[kwb_att_sq1];
+        if(kwb_att_sq2>=0) kwb_att2=w->p->b[kwb_att_sq2];
+
+        if(lower_piece(kwb_att1)=='b' &&
+           ((w->perspective==0 && kwb_att1>='a' && kwb_att1<='z') ||
+            (w->perspective==1 && kwb_att1>='A' && kwb_att1<='Z'))){
+          kwb_attacks_enemy_bishop=1;
+        }
+        if(lower_piece(kwb_att2)=='b' &&
+           ((w->perspective==0 && kwb_att2>='a' && kwb_att2<='z') ||
+            (w->perspective==1 && kwb_att2>='A' && kwb_att2<='Z'))){
+          kwb_attacks_enemy_bishop=1;
+        }
+
+        if(kwb_short_castled &&
+           kwb_g_pawn_two_step &&
+           kwb_attacks_enemy_bishop &&
+           (m.score)< -2.50){
+          kwb_guard=0.780;
+          kwb_guard+=0.090*(-2.50-(m.score));
+          if((state_transfer(&after,w->perspective))>0.40) kwb_guard+=0.080*((state_transfer(&after,w->perspective))-0.40);
+          if(m.forcing<0.0) kwb_guard+=0.040*(-m.forcing);
+          if(kwb_guard>1.250) kwb_guard=1.250;
+          combined-=kwb_guard;
+        }
+
+        if(getenv("SQCHESS_DIAG")!=NULL && kwb_guard>0.0){
+          char kwb_uci[8];
+          move_to_uci(&w->moves[i],kwb_uci);
+          fprintf(stderr,
+            "DIAG_CASTLED_KING_WING_BISHOP_CHASE_MIRAGE move=%s forcing=%.3f imm=%.3f transfer=%.3f attacks_enemy_bishop=%d guard=%.3f\n",
+            kwb_uci,m.forcing,(m.score),(state_transfer(&after,w->perspective)),kwb_attacks_enemy_bishop,kwb_guard);
+        }
+      }
+
 if(getenv("SQCHESS_DIAG")!=NULL){
         char diag_uci[8];
         move_to_uci(&w->moves[i],diag_uci);
