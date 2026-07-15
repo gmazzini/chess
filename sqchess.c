@@ -3190,12 +3190,12 @@ static void *root_worker_main(void *arg){
         if(kwb_short_castled &&
            kwb_g_pawn_two_step &&
            kwb_attacks_enemy_bishop &&
-           (m.score)< -2.50){
-          kwb_guard=0.780;
-          kwb_guard+=0.090*(-2.50-(m.score));
+           (m.score)< -1.20){
+          kwb_guard=1.560;
+          kwb_guard+=0.070*(-1.20-(m.score));
           if((state_transfer(&after,w->perspective))>0.40) kwb_guard+=0.080*((state_transfer(&after,w->perspective))-0.40);
           if(m.forcing<0.0) kwb_guard+=0.040*(-m.forcing);
-          if(kwb_guard>1.250) kwb_guard=1.250;
+          if(kwb_guard>2.200) kwb_guard=2.200;
           combined-=kwb_guard;
         }
 
@@ -3205,6 +3205,106 @@ static void *root_worker_main(void *arg){
           fprintf(stderr,
             "DIAG_CASTLED_KING_WING_BISHOP_CHASE_MIRAGE move=%s forcing=%.3f imm=%.3f transfer=%.3f attacks_enemy_bishop=%d guard=%.3f\n",
             kwb_uci,m.forcing,(m.score),(state_transfer(&after,w->perspective)),kwb_attacks_enemy_bishop,kwb_guard);
+        }
+      }
+
+
+      {
+        /*
+          Knight queen-chase trap mirage:
+          a knight jump to an advanced flank square may look active because it
+          attacks the queen, but at depth 4 it can be a pure tempo trap if the
+          immediate score is very poor and transfer is doing almost all the work.
+          Example: Nc3-b5 attacking Qc7, followed by ...Qc6 and Nb5-a3-b1.
+        */
+        double kqc_guard;
+        char kqc_pc;
+        int kqc_to_file;
+        int kqc_to_rank;
+        int kqc_king_sq;
+        int kqc_king_file;
+        int kqc_king_rank;
+        int kqc_short_castled;
+        int kqc_capture;
+        int kqc_advanced_flank;
+        int kqc_attacks_enemy_queen;
+        int kqc_df[8];
+        int kqc_dr[8];
+        int kqc_j;
+        int kqc_nf;
+        int kqc_nr;
+        int kqc_sq;
+        char kqc_t;
+
+        kqc_guard=0.0;
+
+        kqc_pc=w->p->b[w->moves[i].from];
+        kqc_to_file=file_of(w->moves[i].to);
+        kqc_to_rank=rank_of(w->moves[i].to);
+
+        kqc_capture=((w->moves[i].flags & FLAG_CAPTURE)!=0 ||
+                     (w->moves[i].flags & FLAG_EP)!=0);
+
+        kqc_king_sq=find_king(w->p,w->perspective);
+        kqc_king_file=kqc_king_sq>=0 ? file_of(kqc_king_sq) : -1;
+        kqc_king_rank=kqc_king_sq>=0 ? rank_of(kqc_king_sq) : -1;
+
+        kqc_short_castled=0;
+        if(w->perspective==0 && kqc_king_file==6 && kqc_king_rank==0) kqc_short_castled=1;
+        if(w->perspective==1 && kqc_king_file==6 && kqc_king_rank==7) kqc_short_castled=1;
+
+        kqc_advanced_flank=0;
+        if((kqc_to_file==1 || kqc_to_file==6) &&
+           ((w->perspective==0 && kqc_to_rank>=4) ||
+            (w->perspective==1 && kqc_to_rank<=3))){
+          kqc_advanced_flank=1;
+        }
+
+        kqc_df[0]=1;  kqc_dr[0]=2;
+        kqc_df[1]=2;  kqc_dr[1]=1;
+        kqc_df[2]=2;  kqc_dr[2]=-1;
+        kqc_df[3]=1;  kqc_dr[3]=-2;
+        kqc_df[4]=-1; kqc_dr[4]=-2;
+        kqc_df[5]=-2; kqc_dr[5]=-1;
+        kqc_df[6]=-2; kqc_dr[6]=1;
+        kqc_df[7]=-1; kqc_dr[7]=2;
+
+        kqc_attacks_enemy_queen=0;
+        for(kqc_j=0;kqc_j<8;kqc_j++){
+          kqc_nf=kqc_to_file+kqc_df[kqc_j];
+          kqc_nr=kqc_to_rank+kqc_dr[kqc_j];
+          if(kqc_nf>=0 && kqc_nf<8 && kqc_nr>=0 && kqc_nr<8){
+            kqc_sq=kqc_nr*8+kqc_nf;
+            kqc_t=w->p->b[kqc_sq];
+            if(lower_piece(kqc_t)=='q' &&
+               ((w->perspective==0 && kqc_t>='a' && kqc_t<='z') ||
+                (w->perspective==1 && kqc_t>='A' && kqc_t<='Z'))){
+              kqc_attacks_enemy_queen=1;
+            }
+          }
+        }
+
+        if(lower_piece(kqc_pc)=='n' &&
+           !kqc_capture &&
+           kqc_short_castled &&
+           kqc_advanced_flank &&
+           kqc_attacks_enemy_queen &&
+           (m.score)< -2.50 &&
+           (state_transfer(&after,w->perspective))>1.50){
+          kqc_guard=1.250;
+          kqc_guard+=0.120*((state_transfer(&after,w->perspective))-1.50);
+          kqc_guard+=0.070*(-2.50-(m.score));
+          if(m.forcing<0.0) kqc_guard+=0.040*(-m.forcing);
+          if(kqc_guard>1.850) kqc_guard=1.850;
+          combined-=kqc_guard;
+        }
+
+        if(getenv("SQCHESS_DIAG")!=NULL && kqc_guard>0.0){
+          char kqc_uci[8];
+          move_to_uci(&w->moves[i],kqc_uci);
+          fprintf(stderr,
+            "DIAG_KNIGHT_QUEEN_CHASE_TRAP_MIRAGE move=%s forcing=%.3f imm=%.3f transfer=%.3f attacks_enemy_queen=%d guard=%.3f\n",
+            kqc_uci,m.forcing,(m.score),(state_transfer(&after,w->perspective)),kqc_attacks_enemy_queen,kqc_guard);
         }
       }
 
